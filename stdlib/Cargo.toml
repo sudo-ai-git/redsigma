@@ -1,0 +1,12 @@
+[package]
+name = "redsigma-stdlib"
+version = "0.1.0"
+edition = "2021"
+description = "REDΣSIGMA stdlib module"
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

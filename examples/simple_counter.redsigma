@@ -1,0 +1,83 @@
+// REDΣSIGMA Example: Simple Counter
+// Beginner-friendly example showing basic syntax
+
+contract Counter {
+    // Simple invariant: count never negative
+    invariant count >= 0;
+
+    state {
+        count: VerifiedU64<invariant: count >= 0>,
+        owner: AccountId,
+    }
+
+    @verified(
+        pre: initial >= 0,
+        post: count == initial,
+        invariant: count >= 0
+    )
+    fn new(initial: VerifiedU64) -> Self {
+        Self {
+            count: initial,
+            owner: caller(),
+        }
+    }
+
+    // Increment counter
+    @verified(
+        pre: true,
+        post: count == old(count) + 1,
+        invariant: count >= 0
+    )
+    fn increment() -> VerifiedU64 {
+        count += 1;
+        count
+    }
+
+    // Decrement counter (with underflow protection)
+    @verified(
+        pre: count > 0,
+        post: count == old(count) - 1,
+        invariant: count >= 0
+    )
+    fn decrement() -> VerifiedU64 {
+        count -= 1;
+        count
+    }
+
+    // Add value
+    @verified(
+        pre: value >= 0,
+        post: count == old(count) + value,
+        invariant: count >= 0
+    )
+    fn add(value: VerifiedU64) -> VerifiedU64 {
+        count += value;
+        count
+    }
+
+    // Subtract value
+    @verified(
+        pre: value >= 0 && count >= value,
+        post: count == old(count) - value,
+        invariant: count >= 0
+    )
+    fn subtract(value: VerifiedU64) -> VerifiedU64 {
+        count -= value;
+        count
+    }
+
+    // Reset to zero
+    @verified(
+        pre: true,
+        post: count == 0,
+        invariant: count >= 0
+    )
+    fn reset() -> VerifiedU64 {
+        count = 0;
+        count
+    }
+
+    // View function
+    fn get_count() -> VerifiedU64 { count }
+    fn get_owner() -> AccountId { owner }
+}

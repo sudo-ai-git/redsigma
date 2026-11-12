@@ -1,0 +1,77 @@
+// REDΣSIGMA Example: Basic Escrow Contract
+// This demonstrates the core REDΣSIGMA features:
+// - Contract invariants (enforced at compile time + runtime)
+// - State with verified types
+// - Function annotations with pre/post/invariant
+
+contract SimpleEscrow {
+    // Invariants are ENFORCED at compile time AND runtime
+    invariant balance >= 0;
+    invariant locked + released == total_deposited;
+
+    state {
+        balance: VerifiedU128<invariant: balance >= 0>,
+        locked: VerifiedU128<invariant: locked >= 0>,
+        released: VerifiedU128<invariant: released >= 0>,
+        total_deposited: VerifiedU128<invariant: total_deposited >= 0>,
+        owner: AccountId,
+    }
+
+    // Constructor
+    @verified(
+        pre: initial_balance >= 0,
+        post: balance == initial_balance && locked == 0 && released == 0 && total_deposited == initial_balance,
+        invariant: locked + released == total_deposited
+    )
+    fn new(initial_balance: VerifiedU128) -> Self {
+        Self {
+            balance: initial_balance,
+            locked: 0,
+            released: 0,
+            total_deposited: initial_balance,
+            owner: caller(),
+        }
+    }
+
+    // Deposit funds into escrow
+    @verified(
+        pre: amount > 0,
+        post: balance == old(balance) + amount && locked == old(locked) + amount && total_deposited == old(total_deposited) + amount,
+        invariant: locked + released == total_deposited
+    )
+    fn deposit(amount: VerifiedU128) -> Result<(), Error> {
+        balance += amount;
+        locked += amount;
+        total_deposited += amount;
+        Ok(())
+    }
+
+    // Release funds from escrow
+    @verified(
+        pre: amount > 0 && locked >= amount,
+        post: locked == old(locked) - amount && released == old(released) + amount,
+        invariant: locked + released == total_deposited
+    )
+    fn release(amount: VerifiedU128) -> Result<(), Error> {
+        locked -= amount;
+        released += amount;
+        Ok(())
+    }
+
+    // Refund locked funds
+    @verified(
+        pre: amount > 0 && locked >= amount,
+        post: locked == old(locked) - amount && balance == old(balance) - amount,
+        invariant: locked + released == total_deposited
+    )
+    fn refund(amount: VerifiedU128) -> Result<(), Error> {
+        locked -= amount;
+        balance -= amount;
+        Ok(())
+    }
+
+    // View functions (no state change)
+    fn get_balance() -> VerifiedU128 { balance }
+    fn get_locked() -> VerifiedU128 { locked }
+    fn get_released() -> VerifiedU128 { released }
+}

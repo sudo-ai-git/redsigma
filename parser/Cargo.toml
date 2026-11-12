@@ -1,0 +1,12 @@
+[package]
+name = "redsigma-parser"
+version = "0.1.0"
+edition = "2021"
+description = "REDΣSIGMA hand-written recursive descent parser"
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+indexmap = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "redsigma-compiler"
+version = "0.1.0"
+edition = "2021"
+description = "REDΣSIGMA compiler with proof-carrying codegen"
+license = "MIT"
+
+[dependencies]
+redsigma-parser = { path = "../parser" }
+redsigma-semantic = { path = "../semantic" }
+redsigma-causal = { path = "../causal" }
+redsigma-dualstream = { path = "../dualstream" }
+redsigma-reflection = { path = "../reflection" }
+redsigma-codegen = { path = "../codegen" }
+redsigma-runtime = { path = "../runtime" }
+
+serde = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

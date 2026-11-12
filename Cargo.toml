@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = ["compiler", "parser", "semantic", "causal", "dualstream", "reflection", "codegen", "runtime", "stdlib", "playground", "examples"]
+[workspace.package]
+name = "redsigma"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.86"
+description = "REDΣSIGMA - Self-Verifying Smart Contract Language with Mathematical Integrity"
+repository = "https://github.com/sudosudo/redsigma"
+readme = "README.md"
+keywords = ["smart-contract", "verification", "near", "wasm", "formal-verification", "mathematics"]
+categories = ["development-tools", "development-tools::build-utils", "wasm"]
+[workspace.dependencies]
+nom = "7.1"
+pest = { version = "2.7" }
+pest_derive = "2.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_wasm_bindgen = "0.6"
+sha2 = "0.10"
+rand = "0.8"
+num-bigint = "0.4"
+num-traits = "0.2"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["console"] }
+console_error_panic_hook = "0.1"
+near-sdk = { version = "5.3", default-features = false }
+near-sdk-derive = "5.3"
+near-contract-standards = "5.3"
+tokio = { version = "1.40", features = ["full"] }
+futures = "0.3"
+indexmap = "2.2"
+btreemap = "0.8"
+hashbrown = "0.14"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+proptest = "1.4"
+criterion = "0.5"
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true

@@ -1,0 +1,14 @@
+[package]
+name = "redsigma-examples"
+version = "0.1.0"
+edition = "2021"
+description = "REDΣSIGMA usage examples"
+license = "MIT"
+
+[[bin]]
+name = "rust_usage"
+path = "src/main.rs"
+
+[dependencies]
+redsigma-parser = { path = "../parser" }
+redsigma-compiler = { path = "../compiler" }

@@ -1,0 +1,156 @@
+// REDΣSIGMA Example: Verified DAO with Proposal System
+// Demonstrates complex state management, voting, and treasury invariants
+
+contract VerifiedDAO {
+    // Core invariants
+    invariant treasury >= 0;
+    invariant proposal_count == proposals.len();
+    invariant all votes >= 0;
+    invariant quorum_threshold > 0 && quorum_threshold <= 100;
+
+    state {
+        treasury: VerifiedU128<invariant: treasury >= 0>,
+        proposals: Map<ProposalId, Proposal<invariant: votes_for + votes_against == total_votes>>,
+        members: Set<AccountId>,
+        quorum_threshold: u8<invariant: quorum_threshold > 0 && quorum_threshold <= 100>,
+        proposal_count: VerifiedU64<invariant: proposal_count == proposals.len()>,
+    }
+
+    struct Proposal {
+        id: ProposalId,
+        description: String,
+        proposer: AccountId,
+        votes_for: VerifiedU64<invariant: votes_for >= 0>,
+        votes_against: VerifiedU64<invariant: votes_against >= 0>,
+        total_votes: VerifiedU64<invariant: total_votes == votes_for + votes_against>,
+        status: ProposalStatus,
+        created_at: u64,
+        execution_deadline: u64,
+    }
+
+    enum ProposalStatus {
+        Active,
+        Passed,
+        Rejected,
+        Executed,
+        Cancelled,
+    }
+
+    @verified(
+        pre: initial_treasury >= 0 && initial_quorum > 0 && initial_quorum <= 100,
+        post: treasury == initial_treasury && quorum_threshold == initial_quorum && proposal_count == 0,
+        invariant: treasury >= 0 && proposal_count == proposals.len()
+    )
+    fn new(initial_treasury: VerifiedU128, initial_quorum: u8) -> Self {
+        Self {
+            treasury: initial_treasury,
+            proposals: Map::new(),
+            members: Set::new(),
+            quorum_threshold: initial_quorum,
+            proposal_count: 0,
+        }
+    }
+
+    // Add member
+    @verified(
+        pre: !members.contains(&new_member),
+        post: members.contains(&new_member),
+        invariant: treasury >= 0
+    )
+    fn add_member(new_member: AccountId) -> Result<(), Error> {
+        members.insert(new_member);
+        Ok(())
+    }
+
+    // Contribute to treasury
+    @verified(
+        pre: amount > 0,
+        post: treasury == old(treasury) + amount,
+        invariant: treasury >= 0
+    )
+    fn contribute(amount: VerifiedU128) -> Result<(), Error> {
+        treasury += amount;
+        Ok(())
+    }
+
+    // Create proposal
+    @verified(
+        pre: members.contains(&caller()) && !proposals.contains_key(&proposal_id),
+        post: proposals[proposal_id].votes_for == 0 && proposals[proposal_id].votes_against == 0 && proposals[proposal_id].status == ProposalStatus::Active && proposal_count == old(proposal_count) + 1,
+        invariant: proposal_count == proposals.len()
+    )
+    fn create_proposal(proposal_id: ProposalId, description: String, execution_deadline: u64) -> Result<(), Error> {
+        let proposal = Proposal {
+            id: proposal_id,
+            description,
+            proposer: caller(),
+            votes_for: 0,
+            votes_against: 0,
+            total_votes: 0,
+            status: ProposalStatus::Active,
+            created_at: now(),
+            execution_deadline,
+        };
+        
+        proposals.insert(proposal_id, proposal);
+        proposal_count += 1;
+        Ok(())
+    }
+
+    // Vote on proposal
+    @verified(
+        pre: members.contains(&caller()) && proposals[proposal_id].status == ProposalStatus::Active && now() < proposals[proposal_id].execution_deadline,
+        post: (support == true && proposals[proposal_id].votes_for == old(proposals[proposal_id].votes_for) + 1 && proposals[proposal_id].total_votes == old(proposals[proposal_id].total_votes) + 1) || (support == false && proposals[proposal_id].votes_against == old(proposals[proposal_id].votes_against) + 1 && proposals[proposal_id].total_votes == old(proposals[proposal_id].total_votes) + 1),
+        invariant: all votes >= 0 && proposals[proposal_id].total_votes == proposals[proposal_id].votes_for + proposals[proposal_id].votes_against
+    )
+    fn vote(proposal_id: ProposalId, support: bool) -> Result<(), Error> {
+        let proposal = proposals.get_mut(proposal_id).unwrap();
+        
+        if support {
+            proposal.votes_for += 1;
+        } else {
+            proposal.votes_against += 1;
+        }
+        proposal.total_votes += 1;
+        Ok(())
+    }
+
+    // Finalize proposal
+    @verified(
+        pre: proposals[proposal_id].status == ProposalStatus::Active && now() >= proposals[proposal_id].execution_deadline,
+        post: (proposals[proposal_id].votes_for * 100 / proposals[proposal_id].total_votes >= quorum_threshold && proposals[proposal_id].status == ProposalStatus::Passed) || (proposals[proposal_id].votes_for * 100 / proposals[proposal_id].total_votes < quorum_threshold && proposals[proposal_id].status == ProposalStatus::Rejected),
+        invariant: treasury >= 0
+    )
+    fn finalize_proposal(proposal_id: ProposalId) -> Result<(), Error> {
+        let proposal = proposals.get_mut(proposal_id).unwrap();
+        
+        let support_pct = proposal.votes_for * 100 / proposal.total_votes;
+        if support_pct >= quorum_threshold {
+            proposal.status = ProposalStatus::Passed;
+        } else {
+            proposal.status = ProposalStatus::Rejected;
+        }
+        Ok(())
+    }
+
+    // Execute passed proposal
+    @verified(
+        pre: proposals[proposal_id].status == ProposalStatus::Passed && treasury >= amount,
+        post: treasury == old(treasury) - amount && proposals[proposal_id].status == ProposalStatus::Executed,
+        invariant: treasury >= 0
+    )
+    fn execute_proposal(proposal_id: ProposalId, amount: VerifiedU128, recipient: AccountId) -> Result<(), Error> {
+        let proposal = proposals.get_mut(proposal_id).unwrap();
+        proposal.status = ProposalStatus::Executed;
+        
+        treasury -= amount;
+        // Transfer to recipient (simplified)
+        Ok(())
+    }
+
+    // View functions
+    fn get_treasury() -> VerifiedU128 { treasury }
+    fn get_proposal_count() -> VerifiedU64 { proposal_count }
+    fn get_proposal(id: ProposalId) -> Option<Proposal> { proposals.get(id).cloned() }
+    fn is_member(account: AccountId) -> bool { members.contains(&account) }
+}

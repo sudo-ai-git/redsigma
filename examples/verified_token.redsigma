@@ -1,0 +1,109 @@
+// REDΣSIGMA Example: Verified Token Contract (ERC-20 style)
+// Demonstrates verified arithmetic, allowances, and supply invariants
+
+contract VerifiedToken {
+    // Core invariants
+    invariant total_supply == sum(balances.values());
+    invariant total_supply <= MAX_SUPPLY;
+    invariant all balances >= 0;
+    invariant all allowances >= 0;
+
+    // Constants
+    const MAX_SUPPLY: VerifiedU128 = 1_000_000_000_000_000_000; // 1B tokens with 18 decimals
+
+    state {
+        name: String,
+        symbol: String,
+        decimals: u8,
+        total_supply: VerifiedU128<invariant: total_supply <= MAX_SUPPLY>,
+        balances: Map<AccountId, VerifiedU128<invariant: balance >= 0>>,
+        allowances: Map<(AccountId, AccountId), VerifiedU128<invariant: allowance >= 0>>,
+    }
+
+    @verified(
+        pre: initial_supply <= MAX_SUPPLY,
+        post: total_supply == initial_supply && balances[owner] == initial_supply,
+        invariant: total_supply == sum(balances.values())
+    )
+    fn new(name: String, symbol: String, decimals: u8, initial_supply: VerifiedU128) -> Self {
+        let mut balances = Map::new();
+        balances.insert(caller(), initial_supply);
+        
+        Self {
+            name,
+            symbol,
+            decimals,
+            total_supply: initial_supply,
+            balances,
+            allowances: Map::new(),
+        }
+    }
+
+    // Mint new tokens
+    @verified(
+        pre: amount > 0 && total_supply + amount <= MAX_SUPPLY,
+        post: total_supply == old(total_supply) + amount && balances[to] == old(balances[to]) + amount,
+        invariant: total_supply == sum(balances.values())
+    )
+    fn mint(to: AccountId, amount: VerifiedU128) -> Result<(), Error> {
+        total_supply += amount;
+        *balances.entry(to).or_insert(0) += amount;
+        Ok(())
+    }
+
+    // Burn tokens
+    @verified(
+        pre: amount > 0 && balances[from] >= amount,
+        post: total_supply == old(total_supply) - amount && balances[from] == old(balances[from]) - amount,
+        invariant: total_supply == sum(balances.values())
+    )
+    fn burn(from: AccountId, amount: VerifiedU128) -> Result<(), Error> {
+        total_supply -= amount;
+        balances.get_mut(from).map(|b| *b -= amount);
+        Ok(())
+    }
+
+    // Transfer tokens
+    @verified(
+        pre: amount > 0 && balances[from] >= amount,
+        post: balances[from] == old(balances[from]) - amount && balances[to] == old(balances[to]) + amount,
+        invariant: total_supply == sum(balances.values())
+    )
+    fn transfer(from: AccountId, to: AccountId, amount: VerifiedU128) -> Result<(), Error> {
+        *balances.get_mut(from).unwrap() -= amount;
+        *balances.entry(to).or_insert(0) += amount;
+        Ok(())
+    }
+
+    // Approve allowance
+    @verified(
+        pre: amount >= 0,
+        post: allowances[(owner, spender)] == amount,
+        invariant: all allowances >= 0
+    )
+    fn approve(owner: AccountId, spender: AccountId, amount: VerifiedU128) -> Result<(), Error> {
+        allowances.insert((owner, spender), amount);
+        Ok(())
+    }
+
+    // Transfer from (using allowance)
+    @verified(
+        pre: amount > 0 && balances[from] >= amount && allowances[(from, caller)] >= amount,
+        post: balances[from] == old(balances[from]) - amount && balances[to] == old(balances[to]) + amount && allowances[(from, caller)] == old(allowances[(from, caller)]) - amount,
+        invariant: total_supply == sum(balances.values()) && all allowances >= 0
+    )
+    fn transfer_from(from: AccountId, to: AccountId, amount: VerifiedU128) -> Result<(), Error> {
+        *balances.get_mut(from).unwrap() -= amount;
+        *balances.entry(to).or_insert(0) += amount;
+        *allowances.get_mut(&(from, caller())).unwrap() -= amount;
+        Ok(())
+    }
+
+    // View functions
+    fn name() -> String { name.clone() }
+    fn symbol() -> String { symbol.clone() }
+    fn decimals() -> u8 { decimals }
+    fn total_supply() -> VerifiedU128 { total_supply }
+    fn balance_of(account: AccountId) -> VerifiedU128 { *balances.get(&account).unwrap_or(&0) }
+    fn allowance(owner: AccountId, spender: AccountId) -> VerifiedU128 { *allowances.get(&(owner, spender)).unwrap_or(&0) }
+}

@@ -1,0 +1,149 @@
+WHITESPACE = _{ " " | "\t" | "\r\n" | "\n" | "\r" }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
+NEWLINE = { "\r\n" | "\n" | "\r" }
+
+identifier = @{ ASCII_ALPHANUMERIC | "_" | "-" ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+
+number = @{ "0x" ~ ASCII_HEXDIGIT+ | ASCII_DIGIT+ }
+
+string = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+CONTRACT = { "contract" }
+FN = { "fn" }
+LET = { "let" }
+MUT = { "mut" }
+IF = { "if" }
+ELSE = { "else" }
+RETURN = { "return" }
+INVARIANT = { "invariant" }
+VERIFIED = { "verified" }
+PRE = { "pre" }
+POST = { "post" }
+TYPE = { "type" }
+STRUCT = { "struct" }
+ENUM = { "enum" }
+IMPL = { "impl" }
+FOR = { "for" }
+IN = { "in" }
+MATCH = { "match" }
+AS = { "as" }
+USE = { "use" }
+MOD = { "mod" }
+PUB = { "pub" }
+CONST = { "const" }
+STATIC = { "static" }
+ASYNC = { "async" }
+AWAIT = { "await" }
+TRUE = { "true" }
+FALSE = { "false" }
+NONE = { "none" }
+SOME = { "some" }
+OK = { "ok" }
+ERR = { "err" }
+RESULT = { "Result" }
+OPTION = { "Option" }
+MAP = { "Map" }
+SET = { "Set" }
+VEC = { "Vec" }
+STRING = { "String" }
+BOOL = { "bool" }
+U8 = { "u8" }
+U16 = { "u16" }
+U32 = { "u32" }
+U64 = { "u64" }
+U128 = { "u128" }
+I8 = { "i8" }
+I16 = { "i16" }
+I32 = { "i32" }
+I64 = { "i64" }
+I128 = { "i128" }
+USIZE = { "usize" }
+ISIZE = { "isize" }
+F32 = { "f32" }
+F64 = { "f64" }
+CHAR = { "char" }
+STR = { "str" }
+UNIT = { "()" }
+NEVER = { "!" }
+VERIFIEDU8 = { "VerifiedU8" }
+VERIFIEDU16 = { "VerifiedU16" }
+VERIFIEDU32 = { "VerifiedU32" }
+VERIFIEDU64 = { "VerifiedU64" }
+VERIFIEDU128 = { "VerifiedU128" }
+VERIFIEDI8 = { "VerifiedI8" }
+VERIFIEDI16 = { "VerifiedI16" }
+VERIFIEDI32 = { "VerifiedI32" }
+VERIFIEDI64 = { "VerifiedI64" }
+VERIFIEDI128 = { "VerifiedI128" }
+
+type_ = {
+    identifier ~ ("<" ~ type_ ~ ("," ~ type_)* ~ ">")?
+    | "(" ~ type_? ~ ("," ~ type_)* ~ ")"
+    | "[" ~ type_ ~ ";" ~ number ~ "]"
+    | "[" ~ type_ ~ "]"
+    | "&" ~ "mut"? ~ type_
+    | "!" ~ type_
+    | "->" ~ type_
+}
+
+expr = {
+    number
+    | string
+    | identifier
+    | TRUE
+    | FALSE
+    | "(" ~ expr? ~ ")"
+    | "{" ~ stmt* ~ "}"
+    | "if" ~ expr ~ "{" ~ stmt* ~ "}" ~ ("else" ~ ("if" ~ expr ~ "{" ~ stmt* ~ "}" | "{" ~ stmt* ~ "}"))?
+    | "match" ~ expr ~ "{" ~ (identifier ~ "=>" ~ expr ~ ","?)* ~ "}"
+    | "return" ~ expr?
+    | "let" ~ MUT? ~ identifier ~ (":" ~ type_ )? ~ "=" ~ expr
+    | "const" ~ identifier ~ ":" ~ type_ ~ "=" ~ expr
+    | identifier ~ "=" ~ expr
+    | identifier ~ "." ~ identifier ~ ("(" ~ expr? ~ ("," ~ expr)* ~ ")")?
+    | identifier ~ "(" ~ expr? ~ ("," ~ expr)* ~ ")"
+    | "[" ~ expr? ~ ("," ~ expr)* ~ "]"
+    | "{" ~ (identifier ~ ":" ~ expr ~ ","?)* ~ "}"
+    | "{" ~ expr? ~ ("," ~ expr)* ~ "}"
+    | "!" ~ expr
+    | "&" ~ "mut"? ~ expr
+    | "*" ~ expr
+    | expr ~ ("+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||" | "|" | "&" | "^" | "<<" | ">>") ~ expr
+}
+
+stmt = {
+    (NEWLINE? ~ (LET | CONST) ~ MUT? ~ identifier ~ (":" ~ type_)? ~ "=" ~ expr ~ ";")
+    | (expr ~ ";")
+    | ("return" ~ expr? ~ ";")
+    | ("if" ~ expr ~ "{" ~ stmt* ~ "}" ~ ("else" ~ ("if" ~ expr ~ "{" ~ stmt* ~ "}" | "{" ~ stmt* ~ "}"))?)
+    | ("while" ~ expr ~ "{" ~ stmt* ~ "}")
+    | ("for" ~ identifier ~ "in" ~ expr ~ "{" ~ stmt* ~ "}")
+    | ("match" ~ expr ~ "{" ~ (identifier ~ "=>" ~ expr ~ ","?)* ~ "}")
+    | ("break" ~ ";")
+    | ("continue" ~ ";")
+}
+
+verified_annotation = {
+    VERIFIED ~ "(" ~ (PRE ~ ":" ~ expr ~ ","? ~ POST ~ ":" ~ expr ~ ","? ~ INVARIANT ~ ":" ~ expr ~ ","?)? ~ ")"
+}
+
+fn_decl = {
+    VERIFIED? ~ FN ~ identifier ~ "<" ~ type_ ~ ("," ~ type_)* ~ ">"? ~ "(" ~ (identifier ~ ":" ~ type_ ~ ("," ~ identifier ~ ":" ~ type_)*)? ~ ")" ~ "->" ~ type_ ~ "{" ~ stmt* ~ "}"
+}
+
+state_decl = {
+    STATE ~ "{" ~ (identifier ~ ":" ~ type_ ~ (","?)) ~ "}"
+}
+
+invariant_decl = {
+    INVARIANT ~ expr ~ ";"
+}
+
+contract_decl = {
+    CONTRACT ~ identifier ~ "{" ~ (invariant_decl | state_decl | fn_decl)* ~ "}"
+}
+
+program = {
+    SOI ~ (contract_decl | fn_decl)* ~ EOI
+}
+EOF
