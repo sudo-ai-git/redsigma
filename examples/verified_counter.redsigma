@@ -1,0 +1,42 @@
+// REDΣSIGMA example: a counter whose state transitions are DISCHARGED by the
+// z3 verifier, not just written down.
+//
+// Verify with:
+//   cargo run -p redsigma-compiler --example emit_verification -- examples/verified_counter.redsigma \
+//     | python3 verify/redsigma_verify.py
+//
+// This file uses only syntax the parser implements today: plain integer types
+// and explicit `x = x + 1` assignments. The `VerifiedU64<invariant: ...>` and
+// `+=` forms shown in older docs are NOT parser-supported yet.
+
+contract Counter {
+    invariant count >= 0;
+
+    state {
+        count: u64,
+    }
+
+    @verified(
+        pre: true,
+        post: count == old(count) + 1,
+        invariant: count >= 0
+    )
+    fn increment() -> u64 {
+        count = count + 1;
+        count;
+    }
+
+    @verified(
+        pre: count > 0,
+        post: count == old(count) - 1,
+        invariant: count >= 0
+    )
+    fn decrement() -> u64 {
+        count = count - 1;
+        count;
+    }
+
+    // A view still carries its proof: it must not change state.
+    @verified(pre: true, post: count == old(count), invariant: count >= 0)
+    fn get() -> u64 { count; }
+}

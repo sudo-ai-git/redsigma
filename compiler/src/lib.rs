@@ -1,6 +1,6 @@
 //! REDΣSIGMA compiler - proof-carrying code generation
 
-use redsigma_parser::{Parser, Contract};
+use redsigma_parser::{Contract, Parser};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CompilerError {
@@ -27,8 +27,9 @@ pub fn compile(_source: &str) -> Result<Vec<u8>, CompilerError> {
     Ok(vec![])
 }
 
+pub mod verify_json;
+
 /// Parse and validate a REDΣSIGMA contract
 pub fn parse_contract(source: &str) -> Result<Vec<Contract>, CompilerError> {
-    Parser::parse(source)
-        .map_err(|e| CompilerError::ParseError(e))
+    Parser::parse(source).map_err(|e| CompilerError::ParseError(e))
 }

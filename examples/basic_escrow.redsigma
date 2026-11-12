@@ -1,3 +1,10 @@
+// DESIGN SKETCH — NOT PARSER-SUPPORTED YET. This file records intended
+// REDΣSIGMA syntax (refinement types like `VerifiedU64<invariant: ...>`,
+// compound assignment, contract-level struct/enum, Map/Set, ...) that the
+// hand-written parser does NOT accept today; emit_verification exits non-zero
+// on it. The parser-supported, fully verified example is
+// examples/verified_counter.redsigma.
+//
 // REDΣSIGMA Example: Basic Escrow Contract
 // This demonstrates the core REDΣSIGMA features:
 // - Contract invariants (enforced at compile time + runtime)

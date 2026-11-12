@@ -39,7 +39,11 @@ pub struct Contract {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Invariant {
-    pub expression: String,
+    /// The parsed invariant expression. It used to be stored as
+    /// `format!("{:?}", expr)` — a Rust debug string that no verifier could
+    /// evaluate and that changed with the compiler's formatting, so nothing
+    /// downstream could honestly check an invariant.
+    pub expr: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,21 +69,49 @@ pub struct Function {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifiedAnnotation {
-    pub pre: Option<String>,
-    pub post: Option<String>,
-    pub invariant: Option<String>,
+    /// `pre:` — must hold before the call. Parsed, not a string, so a verifier
+    /// can actually reason about it.
+    pub pre: Option<Expr>,
+    /// `post:` — must hold after the call. `old(e)` is a normal call node; the
+    /// verifier binds it to the pre-state value of `e`.
+    pub post: Option<Expr>,
+    /// `invariant:` — the contract invariant this call must preserve.
+    pub invariant: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Stmt {
-    Let { mutable: bool, name: String, ty: Option<Type>, value: Expr },
-    Const { name: String, ty: Type, value: Expr },
+    Let {
+        mutable: bool,
+        name: String,
+        ty: Option<Type>,
+        value: Expr,
+    },
+    Const {
+        name: String,
+        ty: Type,
+        value: Expr,
+    },
     Expr(Expr),
     Return(Option<Expr>),
-    If { condition: Expr, then_branch: Vec<Stmt>, else_branch: Option<Vec<Stmt>> },
-    While { condition: Expr, body: Vec<Stmt> },
-    For { var: String, iter: Expr, body: Vec<Stmt> },
-    Match { expr: Expr, arms: Vec<(String, Expr)> },
+    If {
+        condition: Expr,
+        then_branch: Vec<Stmt>,
+        else_branch: Option<Vec<Stmt>>,
+    },
+    While {
+        condition: Expr,
+        body: Vec<Stmt>,
+    },
+    For {
+        var: String,
+        iter: Expr,
+        body: Vec<Stmt>,
+    },
+    Match {
+        expr: Expr,
+        arms: Vec<(String, Expr)>,
+    },
     Break,
     Continue,
 }
@@ -91,29 +123,87 @@ pub enum Expr {
     Ident(String),
     Bool(bool),
     Unit,
-    Binary { left: Box<Expr>, op: BinOp, right: Box<Expr> },
-    Unary { op: UnOp, expr: Box<Expr> },
-    Call { func: String, args: Vec<Expr> },
-    MethodCall { receiver: Box<Expr>, method: String, args: Vec<Expr> },
-    FieldAccess { receiver: Box<Expr>, field: String },
-    Index { array: Box<Expr>, index: Box<Expr> },
+    Binary {
+        left: Box<Expr>,
+        op: BinOp,
+        right: Box<Expr>,
+    },
+    Unary {
+        op: UnOp,
+        expr: Box<Expr>,
+    },
+    Call {
+        func: String,
+        args: Vec<Expr>,
+    },
+    MethodCall {
+        receiver: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
+    },
+    FieldAccess {
+        receiver: Box<Expr>,
+        field: String,
+    },
+    Index {
+        array: Box<Expr>,
+        index: Box<Expr>,
+    },
     Array(Vec<Expr>),
-    Struct { name: String, fields: Vec<(String, Expr)> },
+    Struct {
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
     Block(Vec<Stmt>),
-    If { condition: Box<Expr>, then_branch: Box<Expr>, else_branch: Option<Box<Expr>> },
-    Match { expr: Box<Expr>, arms: Vec<(String, Expr)> },
+    If {
+        condition: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Option<Box<Expr>>,
+    },
+    Match {
+        expr: Box<Expr>,
+        arms: Vec<(String, Expr)>,
+    },
+    Range {
+        from: Box<Expr>,
+        to: Box<Expr>,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, Mod,
-    Eq, Ne, Lt, Gt, Le, Ge,
-    And, Or, BitAnd, BitOr, BitXor, Shl, Shr,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    Range,
+    /// Single `=` — distinct from `==` (`Eq`). Previously parsed as `Add`,
+    /// which made `x = v` indistinguishable from `x + v` and silently dropped
+    /// every state mutation.
+    Assign,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnOp {
-    Not, Neg, Deref, Ref, RefMut,
+    Not,
+    Neg,
+    Deref,
+    Ref,
+    RefMut,
 }
 
 pub struct Parser {
@@ -144,25 +234,62 @@ impl Parser {
     }
 
     fn skip_whitespace(&mut self) {
-        while let Some(c) = self.current() {
-            if c.is_whitespace() {
-                self.advance();
-            } else {
-                break;
+        loop {
+            while let Some(c) = self.current() {
+                if c.is_whitespace() {
+                    self.advance();
+                } else {
+                    break;
+                }
             }
+            // `//` line comments and `/* */` block comments. Without these the
+            // parser rejects every documented example file, which is full of
+            // them, with "Unexpected token: Some('/')" on its own comment.
+            if self.current() == Some('/') && self.peek(1) == Some('/') {
+                while let Some(c) = self.current() {
+                    if c == '\n' {
+                        break;
+                    }
+                    self.advance();
+                }
+                continue;
+            }
+            if self.current() == Some('/') && self.peek(1) == Some('*') {
+                self.advance();
+                self.advance();
+                loop {
+                    match self.current() {
+                        None => break,
+                        Some('*') if self.peek(1) == Some('/') => {
+                            self.advance();
+                            self.advance();
+                            break;
+                        }
+                        _ => self.advance(),
+                    }
+                }
+                continue;
+            }
+            break;
         }
     }
 
     fn consume(&mut self, expected: char) -> Result<(), String> {
+        self.skip_whitespace();
         if self.current() == Some(expected) {
             self.advance();
             Ok(())
         } else {
-            Err(format!("Expected '{}', found {:?}", expected, self.current()))
+            Err(format!(
+                "Expected '{}', found {:?}",
+                expected,
+                self.current()
+            ))
         }
     }
 
     fn consume_str(&mut self, s: &str) -> Result<(), String> {
+        self.skip_whitespace();
         for c in s.chars() {
             self.consume(c)?;
         }
@@ -237,11 +364,11 @@ impl Parser {
 
     fn parse_string(&mut self) -> Result<String, String> {
         self.skip_whitespace();
-        self.consume('\"')?;
+        self.consume('"')?;
         let mut s = String::new();
 
         while let Some(c) = self.current() {
-            if c == '\"' {
+            if c == '"' {
                 self.advance();
                 break;
             } else if c == '\\' {
@@ -252,7 +379,7 @@ impl Parser {
                         't' => s.push('\t'),
                         'r' => s.push('\r'),
                         '\\' => s.push('\\'),
-                        '\"' => s.push('\"'),
+                        '"' => s.push('"'),
                         _ => s.push(escaped),
                     }
                     self.advance();
@@ -263,7 +390,7 @@ impl Parser {
             }
         }
 
-        if self.current() != Some('\"') {
+        if self.current() != Some('"') {
             return Err("Unterminated string".to_string());
         }
 
@@ -310,27 +437,25 @@ impl Parser {
         loop {
             self.skip_whitespace();
             let op_prec = self.get_binop_precedence();
-            eprintln!("parse_binary: min_prec={}, op_prec={}, pos={}", min_prec, op_prec, self.pos);
             if op_prec == 0 || op_prec < min_prec {
-                eprintln!("parse_binary: BREAKING at pos {}, op_prec={}, min_prec={}", self.pos, op_prec, min_prec);
                 break;
             }
 
-            eprintln!("parse_binary: calling parse_binop at pos {}", self.pos);
             let op = self.parse_binop()?;
-            eprintln!("parse_binary: after parse_binop, pos={}", self.pos);
-            let right = self.parse_binary(min_prec + 1)?;
-            eprintln!("parse_binary: after right side, pos={}", self.pos);
+            // Left-associative: the right operand must bind strictly tighter
+            // than this operator, so recurse with `op_prec + 1`. Recursing with
+            // `min_prec + 1` let a lower-precedence operator be absorbed into the
+            // right operand — `a + b == c` parsed as `a + (b == c)`, which the
+            // runtime invariant check then rejected as a type error.
+            let right = self.parse_binary(op_prec + 1)?;
 
             left = Expr::Binary {
                 left: Box::new(left),
                 op,
                 right: Box::new(right),
             };
-            eprintln!("parse_binary: created Binary, looping back, pos={}", self.pos);
         }
 
-        eprintln!("parse_binary: RETURNING at pos {}", self.pos);
         Ok(left)
     }
 
@@ -348,16 +473,24 @@ impl Parser {
 
         match (c1, c2) {
             (Some('|'), Some('|')) => 1,
+            (Some('.'), Some('.')) => 1, // Range: ..
             (Some('&'), Some('&')) => 2,
+            // Bitwise or/xor/and. These single-character forms were missing
+            // entirely: `a & b` parsed as `a` followed by a stray unary `& b`.
+            (Some('|'), _) => 3,
+            (Some('^'), _) => 3,
+            (Some('&'), _) => 3,
             (Some('='), Some('='))
             | (Some('!'), Some('='))
             | (Some('<'), Some('='))
             | (Some('>'), Some('='))
-            | (Some('<'), None)
-            | (Some('>'), None) => 3,
-            (Some('+'), _) | (Some('-'), _) => 4,
-            (Some('*'), _) | (Some('/'), _) | (Some('%'), _) => 5,
+            | (Some('<'), Some('<'))
+            | (Some('>'), Some('>')) => 4,
+            (Some('+'), _) | (Some('-'), _) => 5,
+            (Some('*'), _) | (Some('/'), _) | (Some('%'), _) => 6,
             (Some('='), _) => 1, // Assignment has lowest precedence
+            (Some('<'), _) => 4, // single <
+            (Some('>'), _) => 4, // single >
             _ => 0,
         }
     }
@@ -366,28 +499,97 @@ impl Parser {
         self.skip_whitespace();
         let c1 = self.current().ok_or("Expected operator")?;
         let c2 = self.peek(1);
-        eprintln!("parse_binop: pos={}, c1={:?}, c2={:?}", self.pos, c1, c2);
 
         match (c1, c2) {
-            ('|', Some('|')) => { self.advance(); self.advance(); Ok(BinOp::Or) }
-            ('&', Some('&')) => { self.advance(); self.advance(); Ok(BinOp::And) }
-            ('=', Some('=')) => { self.advance(); self.advance(); Ok(BinOp::Eq) }
-            ('!', Some('=')) => { self.advance(); self.advance(); Ok(BinOp::Ne) }
-            ('<', Some('=')) => { self.advance(); self.advance(); Ok(BinOp::Le) }
-            ('>', Some('=')) => { self.advance(); self.advance(); Ok(BinOp::Ge) }
-            ('<', Some('<')) => { self.advance(); self.advance(); Ok(BinOp::Shl) }
-            ('>', Some('>')) => { self.advance(); self.advance(); Ok(BinOp::Shr) }
-            ('+', _) => { self.advance(); Ok(BinOp::Add) }
-            ('-', _) => { self.advance(); Ok(BinOp::Sub) }
-            ('*', _) => { self.advance(); Ok(BinOp::Mul) }
-            ('/', _) => { self.advance(); Ok(BinOp::Div) }
-            ('%', _) => { self.advance(); Ok(BinOp::Mod) }
-            ('=', _) => { self.advance(); Ok(BinOp::Add) } // Assignment uses Add as placeholder
-            ('^', _) => { self.advance(); Ok(BinOp::BitXor) }
-            ('&', _) => { self.advance(); Ok(BinOp::BitAnd) }
-            ('|', _) => { self.advance(); Ok(BinOp::BitOr) }
-            ('<', _) => Ok(BinOp::Lt),
-            ('>', _) => Ok(BinOp::Gt),
+            ('|', Some('|')) => {
+                self.advance();
+                self.advance();
+                Ok(BinOp::Or)
+            }
+            ('.', Some('.')) => {
+                self.advance();
+                self.advance();
+                Ok(BinOp::Range)
+            }
+            ('&', Some('&')) => {
+                self.advance();
+                self.advance();
+                Ok(BinOp::And)
+            }
+            ('=', Some('=')) => {
+                self.advance();
+                self.advance();
+                Ok(BinOp::Eq)
+            }
+            ('!', Some('=')) => {
+                self.advance();
+                self.advance();
+                Ok(BinOp::Ne)
+            }
+            ('<', Some('=')) => {
+                self.advance();
+                self.advance();
+                Ok(BinOp::Le)
+            }
+            ('>', Some('=')) => {
+                self.advance();
+                self.advance();
+                Ok(BinOp::Ge)
+            }
+            ('<', Some('<')) => {
+                self.advance();
+                self.advance();
+                Ok(BinOp::Shl)
+            }
+            ('>', Some('>')) => {
+                self.advance();
+                self.advance();
+                Ok(BinOp::Shr)
+            }
+            ('+', _) => {
+                self.advance();
+                Ok(BinOp::Add)
+            }
+            ('-', _) => {
+                self.advance();
+                Ok(BinOp::Sub)
+            }
+            ('*', _) => {
+                self.advance();
+                Ok(BinOp::Mul)
+            }
+            ('/', _) => {
+                self.advance();
+                Ok(BinOp::Div)
+            }
+            ('%', _) => {
+                self.advance();
+                Ok(BinOp::Mod)
+            }
+            ('=', _) => {
+                self.advance();
+                Ok(BinOp::Assign)
+            }
+            ('^', _) => {
+                self.advance();
+                Ok(BinOp::BitXor)
+            }
+            ('&', _) => {
+                self.advance();
+                Ok(BinOp::BitAnd)
+            }
+            ('|', _) => {
+                self.advance();
+                Ok(BinOp::BitOr)
+            }
+            ('<', _) => {
+                self.advance();
+                Ok(BinOp::Lt)
+            }
+            ('>', _) => {
+                self.advance();
+                Ok(BinOp::Gt)
+            }
             _ => Err(format!("Unknown operator: {:?}{:?}", c1, c2)),
         }
     }
@@ -398,30 +600,120 @@ impl Parser {
             Some('!') => {
                 self.advance();
                 let expr = self.parse_unary()?;
-                Ok(Expr::Unary { op: UnOp::Not, expr: Box::new(expr) })
+                Ok(Expr::Unary {
+                    op: UnOp::Not,
+                    expr: Box::new(expr),
+                })
             }
             Some('-') => {
                 self.advance();
                 let expr = self.parse_unary()?;
-                Ok(Expr::Unary { op: UnOp::Neg, expr: Box::new(expr) })
+                Ok(Expr::Unary {
+                    op: UnOp::Neg,
+                    expr: Box::new(expr),
+                })
             }
             Some('&') => {
                 self.advance();
                 let expr = self.parse_unary()?;
-                Ok(Expr::Unary { op: UnOp::Ref, expr: Box::new(expr) })
+                Ok(Expr::Unary {
+                    op: UnOp::Ref,
+                    expr: Box::new(expr),
+                })
             }
             Some('*') => {
                 self.advance();
                 let expr = self.parse_unary()?;
-                Ok(Expr::Unary { op: UnOp::Deref, expr: Box::new(expr) })
+                Ok(Expr::Unary {
+                    op: UnOp::Deref,
+                    expr: Box::new(expr),
+                })
             }
             _ => self.parse_primary(),
         }
     }
 
+    fn parse_if_expr(&mut self) -> Result<Expr, String> {
+        // "if" keyword already consumed by the caller
+        self.skip_whitespace();
+        let condition = self.parse_expr()?;
+        self.skip_whitespace();
+        self.consume('{')?;
+        let then_branch = Box::new(self.parse_expr()?);
+        self.skip_whitespace();
+        self.consume('}')?;
+        self.skip_whitespace();
+        let else_branch = if self.check_keyword("else") {
+            self.skip_whitespace();
+            self.consume('{')?;
+            let eb = Box::new(self.parse_expr()?);
+            self.skip_whitespace();
+            self.consume('}')?;
+            Some(eb)
+        } else {
+            None
+        };
+        Ok(Expr::If {
+            condition: Box::new(condition),
+            then_branch,
+            else_branch,
+        })
+    }
+
+    fn parse_match_expr(&mut self) -> Result<Expr, String> {
+        self.skip_whitespace();
+        let expr = self.parse_expr()?;
+        self.skip_whitespace();
+        self.consume('{')?;
+        let mut arms = Vec::new();
+        loop {
+            self.skip_whitespace();
+            if self.current() == Some('}') {
+                break;
+            }
+            let pat = if self.current() == Some('_') {
+                self.advance();
+                "_".to_string()
+            } else {
+                self.parse_number()?
+            };
+            self.skip_whitespace();
+            self.consume_str("=>")?;
+            self.skip_whitespace();
+            let arm_expr = self.parse_expr()?;
+            arms.push((pat, arm_expr));
+            self.skip_whitespace();
+            if self.current() == Some(',') {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.skip_whitespace();
+        self.consume('}')?;
+        Ok(Expr::Match {
+            expr: Box::new(expr),
+            arms,
+        })
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, String> {
         self.skip_whitespace();
-        eprintln!("parse_primary: pos={}, char={:?}, call_stack=parse_primary", self.pos, self.current());
+
+        // Keyword-led expressions
+        if self.check_keyword("if") {
+            return self.parse_if_expr();
+        }
+        if self.check_keyword("match") {
+            return self.parse_match_expr();
+        }
+        if self.check_keyword("true") {
+            return Ok(Expr::Bool(true));
+        }
+        if self.check_keyword("false") {
+            return Ok(Expr::Bool(false));
+        }
+
         match self.current() {
             Some('(') => {
                 self.advance();
@@ -432,14 +724,17 @@ impl Parser {
             Some('{') => {
                 self.advance();
                 let mut stmts = Vec::new();
-                self.skip_whitespace();
-                while self.current() != Some('}') && self.current().is_some() {
+                loop {
+                    self.skip_whitespace();
+                    if self.current() == Some('}') {
+                        break;
+                    }
                     stmts.push(self.parse_stmt()?);
                 }
                 self.consume('}')?;
                 Ok(Expr::Block(stmts))
             }
-            Some('\"') => {
+            Some('"') => {
                 let s = self.parse_string()?;
                 Ok(Expr::String(s))
             }
@@ -451,7 +746,7 @@ impl Parser {
                 let ident = self.parse_identifier()?;
                 self.skip_whitespace();
 
-                if self.current() == Some('(') {
+                let mut expr = if self.current() == Some('(') {
                     self.advance();
                     let mut args = Vec::new();
                     self.skip_whitespace();
@@ -467,12 +762,63 @@ impl Parser {
                         }
                     }
                     self.consume(')')?;
-                    Ok(Expr::Call { func: ident, args })
+                    Expr::Call {
+                        func: ident.clone(),
+                        args,
+                    }
                 } else if self.current() == Some('.') {
                     self.advance();
                     let field = self.parse_identifier()?;
-                    Ok(Expr::FieldAccess { receiver: Box::new(Expr::Ident(ident)), field })
-                } else if self.current() == Some(':') {
+                    self.skip_whitespace();
+                    if self.current() == Some('(') {
+                        self.advance();
+                        let mut args = Vec::new();
+                        self.skip_whitespace();
+                        if self.current() != Some(')') {
+                            loop {
+                                args.push(self.parse_expr()?);
+                                self.skip_whitespace();
+                                if self.current() == Some(',') {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        self.consume(')')?;
+                        Expr::MethodCall {
+                            receiver: Box::new(Expr::Ident(ident.clone())),
+                            method: field,
+                            args,
+                        }
+                    } else {
+                        Expr::FieldAccess {
+                            receiver: Box::new(Expr::Ident(ident.clone())),
+                            field,
+                        }
+                    }
+                } else {
+                    Expr::Ident(ident.clone())
+                };
+
+                // Postfix array indexing: arr[0]
+                loop {
+                    self.skip_whitespace();
+                    if self.current() == Some('[') {
+                        self.advance();
+                        let index = self.parse_expr()?;
+                        self.consume(']')?;
+                        expr = Expr::Index {
+                            array: Box::new(expr),
+                            index: Box::new(index),
+                        };
+                    } else {
+                        break;
+                    }
+                }
+
+                self.skip_whitespace();
+                if self.current() == Some(':') {
                     self.advance();
                     let _ty = self.parse_type()?;
                     self.skip_whitespace();
@@ -487,19 +833,29 @@ impl Parser {
                         Ok(Expr::Ident(ident))
                     }
                 } else if self.current() == Some('=') {
-                    // Assignment expression: ident = expr
-                    self.advance();
-                    let value = self.parse_expr()?;
-                    Ok(Expr::Binary {
-                        left: Box::new(Expr::Ident(ident)),
-                        op: BinOp::Add, // Using Add as placeholder for assignment
-                        right: Box::new(value),
-                    })
+                    // Check for == (equality) vs = (assignment)
+                    if self.peek(1) == Some('=') {
+                        // It's ==, don't consume - let binary operator parsing handle it
+                        Ok(expr)
+                    } else {
+                        // Assignment expression: ident = expr
+                        self.advance();
+                        let value = self.parse_expr()?;
+                        Ok(Expr::Binary {
+                            left: Box::new(expr),
+                            op: BinOp::Assign,
+                            right: Box::new(value),
+                        })
+                    }
                 } else {
-                    Ok(Expr::Ident(ident))
+                    Ok(expr)
                 }
             }
-            _ => Err(format!("Unexpected character: {:?} at pos {}", self.current(), self.pos)),
+            _ => Err(format!(
+                "Unexpected character: {:?} at pos {}",
+                self.current(),
+                self.pos
+            )),
         }
     }
 
@@ -508,8 +864,10 @@ impl Parser {
 
         if self.check_keyword("let") {
             let mut mutable = false;
+            self.skip_whitespace();
             if self.check_keyword("mut") {
                 mutable = true;
+                self.skip_whitespace();
             }
 
             let name = self.parse_identifier()?;
@@ -524,9 +882,15 @@ impl Parser {
 
             self.consume('=')?;
             let value = self.parse_expr()?;
-            self.consume(';')?;
-
-            Ok(Stmt::Let { mutable, name, ty, value })
+            if self.current() == Some(';') {
+                self.advance();
+            }
+            Ok(Stmt::Let {
+                mutable,
+                name,
+                ty,
+                value,
+            })
         } else if self.check_keyword("const") {
             let name = self.parse_identifier()?;
             self.skip_whitespace();
@@ -534,7 +898,9 @@ impl Parser {
             let ty = self.parse_type()?;
             self.consume('=')?;
             let value = self.parse_expr()?;
-            self.consume(';')?;
+            if self.current() == Some(';') {
+                self.advance();
+            }
             Ok(Stmt::Const { name, ty, value })
         } else if self.check_keyword("return") {
             let value = if self.current() == Some(';') {
@@ -542,97 +908,147 @@ impl Parser {
             } else {
                 Some(self.parse_expr()?)
             };
-            self.consume(';')?;
+            if self.current() == Some(';') {
+                self.advance();
+            }
             Ok(Stmt::Return(value))
         } else if self.check_keyword("if") {
-            self.consume('(')?;
-            let condition = self.parse_expr()?;
-            self.consume(')')?;
-            self.consume('{')?;
-            let mut then_branch = Vec::new();
-            while self.current() != Some('}') && self.current().is_some() {
-                then_branch.push(self.parse_stmt()?);
-            }
-            self.consume('}')?;
-
-            let else_branch = if self.check_keyword("else") {
-                self.skip_whitespace();
-                if self.current() == Some('{') {
-                    self.advance();
-                    let mut else_branch = Vec::new();
-                    while self.current() != Some('}') && self.current().is_some() {
-                        else_branch.push(self.parse_stmt()?);
+            self.skip_whitespace();
+            if self.current() == Some('(') {
+                // Statement form: if (cond) { stmts } else { stmts }
+                self.consume('(')?;
+                let condition = self.parse_expr()?;
+                self.consume(')')?;
+                self.consume('{')?;
+                let mut then_branch = Vec::new();
+                loop {
+                    self.skip_whitespace();
+                    if self.current() == Some('}') {
+                        break;
                     }
-                    self.consume('}')?;
-                    Some(else_branch)
-                } else if self.check_keyword("if") {
-                    let else_if = self.parse_stmt()?;
-                    Some(vec![else_if])
+                    then_branch.push(self.parse_stmt()?);
+                }
+                self.consume('}')?;
+                let else_branch = if self.skip_whitespace_or_keyword("else") {
+                    self.skip_whitespace();
+                    if self.current() == Some('{') {
+                        self.advance();
+                        let mut else_branch = Vec::new();
+                        loop {
+                            self.skip_whitespace();
+                            if self.current() == Some('}') {
+                                break;
+                            }
+                            else_branch.push(self.parse_stmt()?);
+                        }
+                        self.consume('}')?;
+                        Some(else_branch)
+                    } else if self.check_keyword("if") {
+                        let else_if = self.parse_stmt()?;
+                        Some(vec![else_if])
+                    } else {
+                        None
+                    }
                 } else {
                     None
-                }
+                };
+                Ok(Stmt::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                })
             } else {
-                None
-            };
-
-            Ok(Stmt::If { condition, then_branch, else_branch })
+                // Expression form: if cond { expr } else { expr } used as a statement
+                let expr = self.parse_if_expr()?;
+                if self.current() == Some(';') {
+                    self.advance();
+                }
+                Ok(Stmt::Expr(expr))
+            }
         } else if self.check_keyword("while") {
-            self.consume('(')?;
             let condition = self.parse_expr()?;
-            self.consume(')')?;
             self.consume('{')?;
             let mut body = Vec::new();
-            while self.current() != Some('}') && self.current().is_some() {
+            loop {
+                self.skip_whitespace();
+                if self.current() == Some('}') {
+                    break;
+                }
                 body.push(self.parse_stmt()?);
             }
             self.consume('}')?;
             Ok(Stmt::While { condition, body })
         } else if self.check_keyword("for") {
             let var = self.parse_identifier()?;
+            self.skip_whitespace();
             self.consume_str("in")?;
             let iter = self.parse_expr()?;
             self.consume('{')?;
             let mut body = Vec::new();
-            while self.current() != Some('}') && self.current().is_some() {
+            loop {
+                self.skip_whitespace();
+                if self.current() == Some('}') {
+                    break;
+                }
                 body.push(self.parse_stmt()?);
             }
             self.consume('}')?;
             Ok(Stmt::For { var, iter, body })
         } else if self.check_keyword("break") {
-            self.consume(';')?;
+            if self.current() == Some(';') {
+                self.advance();
+            }
             Ok(Stmt::Break)
         } else if self.check_keyword("continue") {
-            self.consume(';')?;
+            if self.current() == Some(';') {
+                self.advance();
+            }
             Ok(Stmt::Continue)
+        } else if self.check_keyword("match") {
+            let expr = self.parse_match_expr()?;
+            if self.current() == Some(';') {
+                self.advance();
+            }
+            Ok(Stmt::Expr(expr))
         } else {
             let expr = self.parse_expr()?;
-            self.consume(';')?;
+            if self.current() == Some(';') {
+                self.advance();
+            }
             Ok(Stmt::Expr(expr))
         }
     }
 
+    fn skip_whitespace_or_keyword(&mut self, kw: &str) -> bool {
+        self.skip_whitespace();
+        self.check_keyword(kw)
+    }
+
     fn check_keyword(&mut self, kw: &str) -> bool {
-            let saved_pos = self.pos;
-            for c in kw.chars() {
-                if self.current() != Some(c) {
-                    self.pos = saved_pos;
-                    return false;
-                }
-                self.advance();
+        let saved_pos = self.pos;
+        for c in kw.chars() {
+            if self.current() != Some(c) {
+                self.pos = saved_pos;
+                return false;
             }
-            if let Some(c) = self.current() {
-                if c.is_alphanumeric() || c == '_' {
-                    self.pos = saved_pos;
-                    return false;
-                }
-            }
-            true
+            self.advance();
         }
+        if let Some(c) = self.current() {
+            if c.is_alphanumeric() || c == '_' {
+                self.pos = saved_pos;
+                return false;
+            }
+        }
+        true
+    }
 
     fn parse_program(&mut self) -> Result<Vec<Contract>, String> {
         let mut contracts = Vec::new();
-        self.skip_whitespace();
-        while self.current().is_some() {
+        loop {
+            self.skip_whitespace();
+            if self.current().is_none() {
+                break;
+            }
             if self.check_keyword("contract") {
                 contracts.push(self.parse_contract()?);
             } else if self.check_keyword("fn") {
@@ -644,7 +1060,6 @@ impl Parser {
                     functions: vec![func],
                 });
             } else {
-                self.skip_whitespace();
                 if self.current().is_some() {
                     return Err(format!("Unexpected token: {:?}", self.current()));
                 }
@@ -670,11 +1085,13 @@ impl Parser {
             }
             if self.check_keyword("invariant") {
                 let expr = self.parse_expr()?;
-                self.consume(';')?;
-                invariants.push(Invariant { expression: format!("{:?}", expr) });
+                if self.current() == Some(';') {
+                    self.advance();
+                }
+                invariants.push(Invariant { expr });
             } else if self.check_keyword("state") {
                 state = self.parse_state_decl()?;
-            } else if self.check_keyword("fn") {
+            } else if self.current() == Some('@') || self.check_keyword("fn") {
                 functions.push(self.parse_function()?);
             } else {
                 self.skip_whitespace();
@@ -685,20 +1102,25 @@ impl Parser {
         }
 
         self.consume('}')?;
-        Ok(Contract { name, invariants, state, functions })
+        Ok(Contract {
+            name,
+            invariants,
+            state,
+            functions,
+        })
     }
 
     fn parse_state_decl(&mut self) -> Result<StateDecl, String> {
+        self.skip_whitespace();
+        self.consume('{')?;
+        let mut fields = Vec::new();
+        self.skip_whitespace();
+        while self.current() != Some('}') && self.current().is_some() {
             self.skip_whitespace();
-            self.consume('{')?;
-            let mut fields = Vec::new();
-            self.skip_whitespace();
-            while self.current() != Some('}') && self.current().is_some() {
-                self.skip_whitespace();
-                if self.current() == Some('}') {
-                    break;
-                }
-                let name = self.parse_identifier()?;
+            if self.current() == Some('}') {
+                break;
+            }
+            let name = self.parse_identifier()?;
             self.consume(':')?;
             let ty = self.parse_type()?;
             fields.push((name, ty));
@@ -714,15 +1136,83 @@ impl Parser {
     fn parse_function(&mut self) -> Result<Function, String> {
         self.skip_whitespace();
         let mut verified = None;
-        if self.check_keyword("verified") {
-            self.consume('(')?;
-            while self.current() != Some(')') && self.current().is_some() {
-                self.advance();
+        if self.current() == Some('@') {
+            self.advance();
+            self.skip_whitespace();
+            if self.check_keyword("verified") {
+                self.skip_whitespace();
+                let mut pre = None;
+                let mut post = None;
+                let mut invariant = None;
+                if self.current() == Some('(') {
+                    self.advance();
+                    loop {
+                        self.skip_whitespace();
+                        if self.current() == Some(')') {
+                            self.advance();
+                            break;
+                        }
+                        if self.current().is_none() {
+                            return Err("Unterminated @verified annotation".to_string());
+                        }
+                        let key = self.parse_identifier()?;
+                        self.skip_whitespace();
+                        self.consume(':')?;
+                        let expr = self.parse_expr()?;
+                        match key.as_str() {
+                            "pre" => pre = Some(expr),
+                            "post" => post = Some(expr),
+                            "invariant" => invariant = Some(expr),
+                            other => {
+                                return Err(format!(
+                                    "Unknown @verified key '{}' (expected pre, post or invariant)",
+                                    other
+                                ))
+                            }
+                        }
+                        self.skip_whitespace();
+                        if self.current() == Some(',') {
+                            self.advance();
+                        }
+                    }
+                }
+                verified = Some(VerifiedAnnotation {
+                    pre,
+                    post,
+                    invariant,
+                });
+            } else {
+                // Some other attribute: skip its name and any balanced argument
+                // list so the following `fn` still parses.
+                self.parse_identifier()?;
+                self.skip_whitespace();
+                if self.current() == Some('(') {
+                    let mut depth = 0u32;
+                    loop {
+                        match self.current() {
+                            Some('(') => {
+                                depth += 1;
+                                self.advance();
+                            }
+                            Some(')') => {
+                                depth -= 1;
+                                self.advance();
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            Some(_) => self.advance(),
+                            None => break,
+                        }
+                    }
+                }
             }
-            self.consume(')')?;
-            verified = Some(VerifiedAnnotation { pre: None, post: None, invariant: None });
         }
-
+        self.skip_whitespace();
+        // The `fn` keyword is present when a verification annotation precedes it
+        if self.check_keyword("fn") {
+            self.skip_whitespace();
+        }
         let name = self.parse_identifier()?;
 
         let mut generics = Vec::new();
@@ -798,6 +1288,356 @@ impl Parser {
     }
 }
 
+/// Symbol for a binary operator, as the parser accepts it.
+pub fn binop_symbol(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Lt => "<",
+        BinOp::Gt => ">",
+        BinOp::Le => "<=",
+        BinOp::Ge => ">=",
+        BinOp::And => "&&",
+        BinOp::Or => "||",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
+        BinOp::Range => "..",
+        BinOp::Assign => "=",
+    }
+}
+
+pub fn unop_symbol(op: UnOp) -> &'static str {
+    match op {
+        UnOp::Not => "!",
+        UnOp::Neg => "-",
+        UnOp::Deref => "*",
+        UnOp::Ref => "&",
+        UnOp::RefMut => "&mut ",
+    }
+}
+
+pub fn type_to_source(ty: &Type) -> String {
+    if ty.generics.is_empty() {
+        ty.name.clone()
+    } else {
+        let params: Vec<String> = ty.generics.iter().map(type_to_source).collect();
+        format!("{}<{}>", ty.name, params.join(", "))
+    }
+}
+
+/// Render an expression back to REDΣSIGMA source.
+///
+/// Binary and unary forms are always fully parenthesized, so the output is
+/// unambiguously re-parseable without having to reproduce the parser's
+/// precedence table. The previous implementation emitted Rust `{:?}` debug
+/// text, which the parser could not read back at all.
+pub fn expr_to_source(expr: &Expr) -> String {
+    match expr {
+        Expr::Number(n) => n.clone(),
+        Expr::String(s) => format!("{:?}", s),
+        Expr::Ident(name) => name.clone(),
+        Expr::Bool(b) => {
+            if *b {
+                "true".into()
+            } else {
+                "false".into()
+            }
+        }
+        Expr::Unit => "()".into(),
+        Expr::Binary { left, op, right } => {
+            format!(
+                "({} {} {})",
+                expr_to_source(left),
+                binop_symbol(*op),
+                expr_to_source(right)
+            )
+        }
+        Expr::Unary { op, expr } => {
+            format!("({}{})", unop_symbol(*op), expr_to_source(expr))
+        }
+        Expr::Call { func, args } => {
+            let a: Vec<String> = args.iter().map(expr_to_source).collect();
+            format!("{}({})", func, a.join(", "))
+        }
+        Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } => {
+            let a: Vec<String> = args.iter().map(expr_to_source).collect();
+            format!("{}.{}({})", expr_to_source(receiver), method, a.join(", "))
+        }
+        Expr::FieldAccess { receiver, field } => {
+            format!("{}.{}", expr_to_source(receiver), field)
+        }
+        Expr::Index { array, index } => {
+            format!("{}[{}]", expr_to_source(array), expr_to_source(index))
+        }
+        Expr::Array(items) => {
+            let a: Vec<String> = items.iter().map(expr_to_source).collect();
+            format!("[{}]", a.join(", "))
+        }
+        Expr::Struct { name, fields } => {
+            let f: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, expr_to_source(v)))
+                .collect();
+            format!("{} {{ {} }}", name, f.join(", "))
+        }
+        Expr::Block(stmts) => {
+            let s: Vec<String> = stmts.iter().map(stmt_to_source).collect();
+            format!("{{ {} }}", s.join(" "))
+        }
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            let mut out = format!(
+                "if {} {{ {} }}",
+                expr_to_source(condition),
+                expr_to_source(then_branch)
+            );
+            if let Some(eb) = else_branch {
+                out.push_str(&format!(" else {{ {} }}", expr_to_source(eb)));
+            }
+            out
+        }
+        Expr::Match { expr, arms } => {
+            let a: Vec<String> = arms
+                .iter()
+                .map(|(p, e)| format!("{} => {}", p, expr_to_source(e)))
+                .collect();
+            format!("match {} {{ {} }}", expr_to_source(expr), a.join(", "))
+        }
+        Expr::Range { from, to } => {
+            format!("{}..{}", expr_to_source(from), expr_to_source(to))
+        }
+    }
+}
+
+pub fn stmt_to_source(stmt: &Stmt) -> String {
+    match stmt {
+        Stmt::Let {
+            mutable,
+            name,
+            ty,
+            value,
+        } => {
+            let kw = if *mutable { "let mut" } else { "let" };
+            match ty {
+                Some(t) => format!(
+                    "{} {}: {} = {};",
+                    kw,
+                    name,
+                    type_to_source(t),
+                    expr_to_source(value)
+                ),
+                None => format!("{} {} = {};", kw, name, expr_to_source(value)),
+            }
+        }
+        Stmt::Const { name, ty, value } => {
+            format!(
+                "const {}: {} = {};",
+                name,
+                type_to_source(ty),
+                expr_to_source(value)
+            )
+        }
+        Stmt::Expr(e) => format!("{};", expr_to_source(e)),
+        Stmt::Return(Some(e)) => format!("return {};", expr_to_source(e)),
+        Stmt::Return(None) => "return;".into(),
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            let body: Vec<String> = then_branch.iter().map(stmt_to_source).collect();
+            let mut out = format!(
+                "if ({}) {{ {} }}",
+                expr_to_source(condition),
+                body.join(" ")
+            );
+            if let Some(eb) = else_branch {
+                let e: Vec<String> = eb.iter().map(stmt_to_source).collect();
+                out.push_str(&format!(" else {{ {} }}", e.join(" ")));
+            }
+            out
+        }
+        Stmt::While { condition, body } => {
+            let b: Vec<String> = body.iter().map(stmt_to_source).collect();
+            format!("while {} {{ {} }}", expr_to_source(condition), b.join(" "))
+        }
+        Stmt::For { var, iter, body } => {
+            let b: Vec<String> = body.iter().map(stmt_to_source).collect();
+            format!(
+                "for {} in {} {{ {} }}",
+                var,
+                expr_to_source(iter),
+                b.join(" ")
+            )
+        }
+        Stmt::Match { expr, arms } => {
+            let a: Vec<String> = arms
+                .iter()
+                .map(|(p, e)| format!("{} => {}", p, expr_to_source(e)))
+                .collect();
+            format!("match {} {{ {} }}", expr_to_source(expr), a.join(", "))
+        }
+        Stmt::Break => "break;".into(),
+        Stmt::Continue => "continue;".into(),
+    }
+}
+
+/// Collect every identifier named anywhere in an expression.
+pub fn collect_idents(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Ident(n) => out.push(n.clone()),
+        Expr::Binary { left, right, .. } => {
+            collect_idents(left, out);
+            collect_idents(right, out);
+        }
+        Expr::Unary { expr, .. } => collect_idents(expr, out),
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_idents(a, out);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_idents(receiver, out);
+            for a in args {
+                collect_idents(a, out);
+            }
+        }
+        Expr::FieldAccess { receiver, .. } => collect_idents(receiver, out),
+        Expr::Index { array, index } => {
+            collect_idents(array, out);
+            collect_idents(index, out);
+        }
+        Expr::Array(items) => {
+            for i in items {
+                collect_idents(i, out);
+            }
+        }
+        Expr::Struct { fields, .. } => {
+            for (_, v) in fields {
+                collect_idents(v, out);
+            }
+        }
+        Expr::Block(stmts) => {
+            for s in stmts {
+                collect_stmt_idents(s, out);
+            }
+        }
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_idents(condition, out);
+            collect_idents(then_branch, out);
+            if let Some(e) = else_branch {
+                collect_idents(e, out);
+            }
+        }
+        Expr::Match { expr, arms } => {
+            collect_idents(expr, out);
+            for (_, e) in arms {
+                collect_idents(e, out);
+            }
+        }
+        Expr::Range { from, to } => {
+            collect_idents(from, out);
+            collect_idents(to, out);
+        }
+        _ => {}
+    }
+}
+
+pub fn collect_stmt_idents(stmt: &Stmt, out: &mut Vec<String>) {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::Const { value, .. } | Stmt::Expr(value) => {
+            collect_idents(value, out)
+        }
+        Stmt::Return(Some(e)) => collect_idents(e, out),
+        Stmt::Return(None) => {}
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_idents(condition, out);
+            for s in then_branch {
+                collect_stmt_idents(s, out);
+            }
+            if let Some(eb) = else_branch {
+                for s in eb {
+                    collect_stmt_idents(s, out);
+                }
+            }
+        }
+        Stmt::While { condition, body } => {
+            collect_idents(condition, out);
+            for s in body {
+                collect_stmt_idents(s, out);
+            }
+        }
+        Stmt::For { iter, body, .. } => {
+            collect_idents(iter, out);
+            for s in body {
+                collect_stmt_idents(s, out);
+            }
+        }
+        Stmt::Match { expr, arms } => {
+            collect_idents(expr, out);
+            for (_, e) in arms {
+                collect_idents(e, out);
+            }
+        }
+        Stmt::Break | Stmt::Continue => {}
+    }
+}
+
+/// Render a contract back to REDΣSIGMA source that the parser can read again.
+pub fn contract_to_source(contract: &Contract) -> String {
+    let mut out = format!("contract {} {{\n", contract.name);
+    for inv in &contract.invariants {
+        out.push_str(&format!("    invariant {};\n", expr_to_source(&inv.expr)));
+    }
+    out.push_str("    state {\n");
+    for (name, ty) in &contract.state.fields {
+        out.push_str(&format!("        {}: {},\n", name, type_to_source(ty)));
+    }
+    out.push_str("    }\n");
+    for func in &contract.functions {
+        let params: Vec<String> = func
+            .params
+            .iter()
+            .map(|(n, t)| format!("{}: {}", n, type_to_source(t)))
+            .collect();
+        out.push_str(&format!(
+            "\n    fn {}({}) -> {} {{\n",
+            func.name,
+            params.join(", "),
+            type_to_source(&func.return_type)
+        ));
+        for stmt in &func.body {
+            out.push_str(&format!("        {}\n", stmt_to_source(stmt)));
+        }
+        out.push_str("    }\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,5 +1671,171 @@ mod tests {
         "#;
         let contracts = Parser::parse(input).unwrap();
         assert_eq!(contracts.len(), 1);
+    }
+
+    #[test]
+    fn test_comments_are_skipped() {
+        // Regression: the parser rejected its own comment tokens, so every
+        // documented example file failed with "Unexpected token: Some('/')".
+        let input = r#"
+            // line comment
+            contract Test {
+                /* block
+                   comment */
+                state { x: u64 } // trailing comment
+                fn foo() -> u64 { x; }
+            }
+        "#;
+        let contracts = Parser::parse(input).unwrap();
+        assert_eq!(contracts.len(), 1);
+        assert_eq!(contracts[0].name, "Test");
+        assert_eq!(contracts[0].state.fields[0].0, "x");
+    }
+
+    #[test]
+    fn test_division_is_not_a_comment() {
+        // `x / 2` must stay a division; only `//` and `/*` open a comment.
+        let input = r#"
+            contract Test {
+                state { x: u64 }
+                fn foo() -> u64 { x / 2; }
+            }
+        "#;
+        let contracts = Parser::parse(input).unwrap();
+        match &contracts[0].functions[0].body[0] {
+            Stmt::Expr(Expr::Binary { op: BinOp::Div, .. }) => {}
+            other => panic!("expected Div, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_assignment_is_not_addition() {
+        // Regression: `x = v` used to parse as `x + v` (BinOp::Add placeholder),
+        // which made every state mutation disappear from the AST.
+        let input = r#"
+            contract Test {
+                state { x: u64 }
+                fn set(v: u64) -> u64 { x = v; v; }
+            }
+        "#;
+        let contracts = Parser::parse(input).unwrap();
+        match &contracts[0].functions[0].body[0] {
+            Stmt::Expr(Expr::Binary {
+                op: BinOp::Assign, ..
+            }) => {}
+            other => panic!("expected BinOp::Assign, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_equality_is_not_assignment() {
+        // `==` must stay Eq; only a single `=` is Assign.
+        let input = r#"
+            contract Test {
+                state { x: u64 }
+                fn same(a: u64, b: u64) -> u64 { a == b; }
+            }
+        "#;
+        let contracts = Parser::parse(input).unwrap();
+        match &contracts[0].functions[0].body[0] {
+            Stmt::Expr(Expr::Binary { op: BinOp::Eq, .. }) => {}
+            other => panic!("expected BinOp::Eq, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verified_annotation_is_captured_as_expressions() {
+        // Regression: `@verified(pre:..., post:..., invariant:...)` was discarded
+        // at the only construction site, so no verifier could ever see it.
+        let input = r#"
+            contract Test {
+                invariant total >= 0;
+                state { total: u64 }
+                @verified(
+                    pre: amount > 0,
+                    post: total == old(total) + amount,
+                    invariant: total >= 0,
+                )
+                fn deposit(amount: u64) -> u64 { total = total + amount; amount; }
+            }
+        "#;
+        let contracts = Parser::parse(input).unwrap();
+        let ann = contracts[0].functions[0]
+            .verified
+            .as_ref()
+            .expect("@verified must be captured");
+
+        let pre = ann.pre.as_ref().expect("pre must be parsed");
+        assert_eq!(expr_to_source(pre), "(amount > 0)");
+
+        let post = ann.post.as_ref().expect("post must be parsed");
+        let post_src = expr_to_source(post);
+        assert!(post_src.contains("=="), "post should compare: {}", post_src);
+        assert!(
+            post_src.contains("old"),
+            "post should mention old(): {}",
+            post_src
+        );
+        // `old(total)` parses as an ordinary call node.
+        assert!(matches!(post, Expr::Binary { .. }));
+
+        let inv = ann.invariant.as_ref().expect("invariant must be parsed");
+        assert_eq!(expr_to_source(inv), "(total >= 0)");
+    }
+
+    #[test]
+    fn test_verified_annotation_without_parens_has_no_clauses() {
+        let input = r#"
+            contract Test {
+                invariant x >= 0;
+                state { x: u64 }
+                @verified
+                fn get() -> u64 { x; }
+            }
+        "#;
+        let contracts = Parser::parse(input).unwrap();
+        let ann = contracts[0].functions[0].verified.as_ref().unwrap();
+        assert!(ann.pre.is_none());
+        assert!(ann.post.is_none());
+        assert!(ann.invariant.is_none());
+    }
+
+    #[test]
+    fn test_unknown_verified_key_is_rejected() {
+        let input = r#"
+            contract Test {
+                invariant x >= 0;
+                state { x: u64 }
+                @verified(unknown: x > 0)
+                fn get() -> u64 { x; }
+            }
+        "#;
+        let err = Parser::parse(input).expect_err("unknown @verified key must be an error");
+        assert!(err.contains("Unknown @verified key"), "{}", err);
+    }
+
+    #[test]
+    fn test_precedence_arithmetic_binds_tighter_than_comparison() {
+        // Regression: `a + b == c` parsed as `a + (b == c)` because parse_binary
+        // recursed with `min_prec + 1` instead of the operator's own precedence.
+        let input = r#"
+            contract Test {
+                invariant a + b == c;
+                state { a: u64, b: u64, c: u64 }
+                fn f() -> u64 { 1; }
+            }
+        "#;
+        let contracts = Parser::parse(input).unwrap();
+        match &contracts[0].invariants[0].expr {
+            Expr::Binary {
+                op: BinOp::Eq,
+                left,
+                ..
+            } => match left.as_ref() {
+                Expr::Binary { op: BinOp::Add, .. } => {}
+                other => panic!("expected (a + b) on the left of ==, got {:?}", other),
+            },
+            other => panic!("expected a top-level ==, got {:?}", other),
+        }
     }
 }

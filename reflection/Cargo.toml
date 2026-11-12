@@ -6,6 +6,10 @@ description = "REDΣSIGMA reflection module"
 license = "MIT"
 
 [dependencies]
+redsigma-parser = { path = "../parser" }
+redsigma-semantic = { path = "../semantic" }
+redsigma-dualstream = { path = "../dualstream" }
+redsigma-causal = { path = "../causal" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

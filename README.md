@@ -10,52 +10,62 @@
 
 ## Overview
 
-REDΣSIGMA is a revolutionary smart contract language where **mathematical verification is intrinsic to the language syntax itself**. Unlike traditional languages where verification is an afterthought (external audits, testing, formal verification tools), REDΣSIGMA makes it **impossible to write buggy code by construction**.
+REDΣSIGMA is a smart contract language where every function carries a
+machine-checked proof. `@verified(pre:, post:, invariant:)` clauses are parsed
+into the AST and discharged by a tri-state z3 verifier over the straight-line
+integer subset. A clause the verifier cannot model is **DECLINED** and reported
+as `Unverified` — never as passed.
+
+**Real today (each claim backed by an executed gate):**
+
+- Hand-written recursive-descent parser: contracts, state, contract invariants,
+  `@verified`, `let`/`const`/`if`/`while`/`for`/`match`, expressions, comments.
+- z3 verifier (`verify/redsigma_verify.py`): `pre ∧ ¬post` unsat ⇒ **Proven**;
+  sat ⇒ **Counterexample** with a model; unmodelled construct ⇒ **Unverified**.
+- 231-gate / dual-stream / causal / 6-layer reflection integrity layers over
+  parsed contracts (`cargo test --workspace`).
+- NEAR test-contract crate + runtime verification library.
+
+**Not implemented yet — do not cite as done:**
+
+- `compile()` is a stub; no WASM is produced from REDΣSIGMA source.
+- Refinement types (`VerifiedU64<invariant: ...>`), compound assignment (`+=`),
+  contract-level `struct`/`enum`, `Map`/`Set`/`Result` are **design sketches**.
+- Proof-carrying WASM codegen is a stub.
 
 ### Core Innovation: Mathematical Integrity as Language Primitive
 
-Every REDΣSIGMA contract **must** declare mathematical invariants. Every function **carries its own proof**. The compiler **generates** the proof. The runtime **verifies** the proof. The 231-gate checksum tracks **every state transition**.
+Every REDΣSIGMA function carries its own proof. The verifier discharges the
+`pre` / `post` / `invariant` clauses against the function body; state
+transitions are tracked by the 231-gate checksum layers.
 
 ```redsigma
-// REDΣSIGMA: Every contract MUST declare mathematical invariants
-contract Escrow {
-    // Invariants are ENFORCED at compile time AND runtime
-    invariant balance >= 0;
-    invariant total_locked == sum(pending_locks);
-    invariant released + refunded + locked == total_deposited;
+// REDΣSIGMA: every function carries its own proof
+contract Counter {
+    invariant count >= 0;
 
     state {
-        balances: Map<AccountId, VerifiedU128<invariant: balance >= 0>>,
-        locks: Map<DealId, Lock<invariant: amount > 0>>,
+        count: u64,
     }
 
-    // Every function CARRIES ITS OWN PROOF
     @verified(
-        pre: amount > 0 && sender.balance >= amount,
-        post: balances[sender] == old(balances[sender]) - amount,
-        invariant: total_locked == sum(pending_locks)
+        pre: true,
+        post: count == old(count) + 1,
+        invariant: count >= 0
     )
-    fn lock_funds(deal_id: DealId, amount: VerifiedU128) -> Result<LockId, Error> {
-        // Compiler GENERATES the proof
-        // Runtime VERIFIES the proof
-        // 231-gate checksum tracks EVERY state transition
+    fn increment() -> u64 {
+        count = count + 1;
+        count;
     }
 }
 ```
 
-### Impossible to Write Buggy Code
+### What the verifier does and does not say
 
-```redsigma
-// SYNTAX ERROR - missing @verified annotation
-fn buggy_transfer(to: AccountId, amount: U128) { ... }
-// Error: "Function 'buggy_transfer' missing @verified annotation with pre/post/invariant"
-
-// SYNTAX ERROR - invariant violated at compile time
-fn overflow_transfer(to: AccountId, amount: U128) {
-    @verified(pre: true, post: balance == old(balance) + amount) // OVERFLOW POSSIBLE
-}
-// Error: "Postcondition can overflow. Use VerifiedU128<invariant: balance + amount <= MAX> instead."
-```
+A `Proven` verdict means the clause follows from the modelled body for **all**
+inputs satisfying the precondition, in the z3 model of that subset. It is not a
+proof about the generated WASM (none is generated), and `Unverified` means
+exactly nothing was proved.
 
 ## Mathematical Foundation
 
@@ -70,7 +80,12 @@ REDΣSIGMA integrates the **Tanakh 231-Gate Mathematical Framework** — a six-l
 | **CausalMemory** | Parent→child chains for every transaction |
 | **6-Layer Self-Reflection** | Pre-execution verification |
 
-**Verified Results**: 10/10 spike tests passed — tamper-evident memory, adversarial compression, syndrome diagnostics, primality-verified skills, self-verifying language, cross-lingual transfer, curriculum scheduler, fugue decomposition, quantum-resistant VRE, embedding-free retrieval.
+**Verified Results**: 10/10 application spike tests passed at the framework
+level — tamper-evident memory, adversarial compression, syndrome diagnostics,
+primality-verified skills, self-verifying language, cross-lingual transfer,
+curriculum scheduler, fugue decomposition, quantum-resistant VRE,
+embedding-free retrieval. These exercise the 231-gate mathematics, not the
+REDΣSIGMA compiler (which is a stub).
 
 ## Architecture
 
@@ -78,6 +93,8 @@ REDΣSIGMA integrates the **Tanakh 231-Gate Mathematical Framework** — a six-l
 REDΣSIGMA Source
        ↓
 [Parser + Invariant Extraction]  ← Hand-written recursive descent parser
+       ↓
+[z3 verification of @verified]   ← verify/redsigma_verify.py (REAL)
        ↓
 [SemanticSpace Projection] → 5-bucket deterministic signature (Mod-5)
        ↓
@@ -89,9 +106,9 @@ REDΣSIGMA Source
        ↓
 [6-Layer Self-Reflection] → Consistency→Memory→Oracle→Completeness→Uncertainty→Contradiction
        ↓
-[Proof-Carrying WASM] → WASM + Proof Objects
+[Proof-Carrying WASM] → WASM + Proof Objects   ← STUB (not implemented)
        ↓
-[NEAR Deployment] + [Runtime Verification Library]
+[NEAR Deployment] + [Runtime Verification Library]  ← test contract builds; deployment DNS-blocked
 ```
 
 ## Quick Start
@@ -100,6 +117,7 @@ REDΣSIGMA Source
 
 - Rust 1.86+
 - cargo
+- Python 3 + z3-solver (`pip install z3-solver`) for `@verified` verification
 
 ### Installation
 
@@ -112,114 +130,66 @@ cargo build --release
 ### Running Tests
 
 ```bash
-cargo test
+cargo test --workspace
+python3 verify/redsigma_verify.py --selftest
 ```
 
 ## Usage Examples
 
-### Basic Contract
+### Verified Contract (parser-supported)
+
+This is the example that actually parses and verifies today:
 
 ```redsigma
-// examples/basic_escrow.redsigma
-contract SimpleEscrow {
-    invariant balance >= 0;
-    invariant locked + released == total_deposited;
+// examples/verified_counter.redsigma
+contract Counter {
+    invariant count >= 0;
 
     state {
-        balance: VerifiedU128<invariant: balance >= 0>,
-        locked: VerifiedU128<invariant: locked >= 0>,
-        released: VerifiedU128<invariant: released >= 0>,
-        owner: AccountId,
+        count: u64,
     }
 
     @verified(
-        pre: amount > 0,
-        post: balance == old(balance) + amount && locked == old(locked) + amount,
-        invariant: locked + released == total_deposited
+        pre: true,
+        post: count == old(count) + 1,
+        invariant: count >= 0
     )
-    fn deposit(amount: VerifiedU128) -> Result<(), Error> {
-        balance += amount;
-        locked += amount;
-        Ok(())
+    fn increment() -> u64 {
+        count = count + 1;
+        count;
     }
 
     @verified(
-        pre: amount > 0 && locked >= amount,
-        post: locked == old(locked) - amount && released == old(released) + amount,
-        invariant: locked + released == total_deposited
+        pre: count > 0,
+        post: count == old(count) - 1,
+        invariant: count >= 0
     )
-    fn release(amount: VerifiedU128) -> Result<(), Error> {
-        locked -= amount;
-        released += amount;
-        Ok(())
+    fn decrement() -> u64 {
+        count = count - 1;
+        count;
     }
+
+    @verified(pre: true, post: count == old(count), invariant: count >= 0)
+    fn get() -> u64 { count; }
 }
 ```
 
-### Verified Token Contract
+Verify it (z3):
 
-```redsigma
-// examples/verified_token.redsigma
-contract VerifiedToken {
-    invariant total_supply == sum(balances.values());
-    invariant total_supply <= MAX_SUPPLY;
-    invariant all balances >= 0;
-
-    state {
-        name: String,
-        symbol: String,
-        decimals: u8,
-        total_supply: VerifiedU128<invariant: total_supply <= MAX_SUPPLY>,
-        balances: Map<AccountId, VerifiedU128<invariant: balance >= 0>>,
-        allowances: Map<(AccountId, AccountId), VerifiedU128<invariant: allowance >= 0>>,
-    }
-
-    @verified(
-        pre: amount > 0 && total_supply + amount <= MAX_SUPPLY,
-        post: total_supply == old(total_supply) + amount && balances[to] == old(balances[to]) + amount,
-        invariant: total_supply == sum(balances.values())
-    )
-    fn mint(to: AccountId, amount: VerifiedU128) -> Result<(), Error> { ... }
-
-    @verified(
-        pre: amount > 0 && balances[from] >= amount,
-        post: balances[from] == old(balances[from]) - amount && balances[to] == old(balances[to]) + amount,
-        invariant: total_supply == sum(balances.values())
-    )
-    fn transfer(from: AccountId, to: AccountId, amount: VerifiedU128) -> Result<(), Error> { ... }
-}
+```bash
+verify/verify.sh examples/verified_counter.redsigma
 ```
 
-### DAO with Proposal Verification
+### Design sketches (NOT parser-supported)
 
-```redsigma
-// examples/verified_dao.redsigma
-contract VerifiedDAO {
-    invariant treasury >= 0;
-    invariant proposal_count == proposals.len();
-    invariant all votes >= 0;
-
-    state {
-        treasury: VerifiedU128<invariant: treasury >= 0>,
-        proposals: Map<ProposalId, Proposal<invariant: votes_for + votes_against == total_votes>>,
-        members: Set<AccountId>,
-    }
-
-    @verified(
-        pre: caller in members && amount > 0,
-        post: treasury == old(treasury) + amount,
-        invariant: treasury >= 0
-    )
-    fn contribute(amount: VerifiedU128) -> Result<(), Error> { ... }
-
-    @verified(
-        pre: caller in members && proposal_id not in proposals,
-        post: proposals[proposal_id].votes_for == 0 && proposals[proposal_id].votes_against == 0,
-        invariant: proposal_count == proposals.len()
-    )
-    fn create_proposal(proposal_id: ProposalId, description: String) -> Result<(), Error> { ... }
-}
-```
+`examples/simple_counter.redsigma`, `examples/basic_escrow.redsigma`,
+`examples/verified_token.redsigma` and `examples/verified_dao.redsigma` record
+**intended** syntax — refinement types such as
+`VerifiedU64<invariant: count >= 0>`, compound assignment (`+=`), contract-level
+`struct`/`enum`, `Map`/`Set`, `caller()`, `Result<(), Error>`, quantifiers — that
+the hand-written parser does **not** accept yet. `emit_verification` exits
+non-zero on them. They are not compilable REDΣSIGMA and must not be cited as
+such.
 
 ## Using from Rust
 
@@ -257,18 +227,13 @@ fn main() -> Result<(), CompilerError> {
 
 | Type | Description |
 |------|-------------|
-| `u8`..`u128` | Unsigned integers |
-| `i8`..`i128` | Signed integers |
-| `VerifiedU8`..`VerifiedU128<invariant: ...>` | Verified unsigned with compile-time invariant |
-| `VerifiedI8`..`VerifiedI128<invariant: ...>` | Verified signed with compile-time invariant |
+| `u8`..`u64` | Unsigned integers (modelled by the z3 verifier) |
+| `i8`..`i64` | Signed integers (modelled by the z3 verifier) |
+| `u128` / `i128` | Parsed, but DECLINED by the z3 verifier (no 128-bit BitVec model) |
 | `bool` | Boolean |
-| `String` | UTF-8 string |
-| `AccountId` | NEAR account identifier |
-| `Map<K, V>` | Key-value map |
-| `Set<T>` | Unique set |
-| `Vec<T>` | Dynamic array |
-| `Option<T>` | Optional value |
-| `Result<T, E>` | Result type |
+| `Vec<T>` | Typed generic (parsed; element operations are declined by the verifier) |
+| `VerifiedU8`..`VerifiedU128<invariant: ...>` | **Planned** refinement types — NOT parser-supported yet |
+| `String`, `AccountId`, `Map<K, V>`, `Set<T>`, `Option<T>`, `Result<T, E>` | **Planned** — parsed only as opaque type names, not modelled |
 
 ### Function Annotations
 
@@ -281,14 +246,22 @@ fn main() -> Result<(), CompilerError> {
 fn function_name(params) -> ReturnType { ... }
 ```
 
+Every function must carry `@verified`; a function without clauses is reported as
+not passed, never as proven.
+
 ### State Declarations
 
 ```redsigma
 state {
-    field_name: Type<invariant: <boolean expression>>,
+    field_name: u64,
     ...
 }
 ```
+
+The `Type<invariant: <boolean expression>>` refinement form shown in older
+docs is **planned**, not parser-supported. State invariants go in the
+`invariant:` clause of `@verified` and in contract-level `invariant` statements,
+which the z3 verifier does check.
 
 ### Contract Invariants
 
@@ -336,6 +309,23 @@ verify_clearing_with_vre(solver, asset, reductions, limits, source)
 await verify_guard_decision(intent, key, contract, method, now, gas, policy)
 ```
 
+### REDΣSIGMA test contract — live on testnet
+
+`redsigma.s03-gate.testnet` — code hash `5Tc9emgMWUQSmmBuh9VuXH4RD4ygniQ5ZqkGcz1VvFqq`,
+storage 185,925 bytes. Deployed from
+`target/wasm32-unknown-unknown/release/redsigma_test_contract.wasm`.
+
+```bash
+near view redsigma.s03-gate.testnet get_contract_count '{}'   # -> 2
+near call redsigma.s03-gate.testnet deploy_contract \
+  '{"contract_name":"counter","source":"..."}' \
+  --accountId redsigma.s03-gate.testnet
+```
+
+This is a **handwritten Rust** NEAR contract, not one generated from a
+`.redsigma` file — `compile()` is still a stub. Details and gotchas:
+`DEPLOYMENT_STATUS.md`.
+
 ## Development
 
 ### Building
@@ -377,6 +367,27 @@ cargo clippy --workspace -- -D warnings
 cargo check --workspace
 ```
 
+### Verification (z3)
+
+`@verified` clauses are discharged by a tri-state z3 verifier:
+
+```bash
+verify/verify.sh examples/verified_counter.redsigma   # a real contract
+python3 verify/redsigma_verify.py --selftest          # the verifier's own gate
+```
+
+- **Proven** — `pre ∧ ¬goal` is unsat; the clause follows from the body.
+- **Counterexample** — z3 produced a model; the clause is refuted.
+- **Unverified** — the layer DECLINED to model something (division, calls,
+  loops, mixed-width arithmetic, ...). It proved nothing and is never reported
+  as True.
+
+Exit code is 0 only when every function carries `@verified` and every
+obligation is Proven. Integers are modelled as `BitVec` at the declared width
+and signedness; `/` and `%` are declined rather than mis-modelled. The
+self-test is falsifiable: reverting the `old()` pre-state fix, the unsigned
+comparison fix, or body execution each makes it fail.
+
 ## Roadmap
 
 ### ✅ Completed (Phase 1)
@@ -391,11 +402,18 @@ cargo check --workspace
 - [x] Compiler Pipeline (stub)
 - [x] 10/10 Mathematical Spike Tests Passed
 
-### 🔄 In Progress (Phase 2)
-- [ ] Full compiler pipeline implementation
+### ✅ Completed (Phase 2a, verification)
+- [x] `@verified` clauses parsed into the AST (were discarded)
+- [x] Verification input exported as JSON (`compiler/examples/emit_verification.rs`)
+- [x] z3 tri-state verifier with a falsifiable self-test (`verify/redsigma_verify.py`)
+- [x] Parser supports `//` and `/* */` comments
+
+### 🔄 In Progress (Phase 2b)
+- [ ] Full compiler pipeline implementation (`compile()` is still a stub)
 - [ ] WASM codegen with proof objects
+- [ ] Refinement types (`VerifiedU64<invariant: ...>`) and compound assignment
 - [ ] `@near/tanakh-vre-guard` shared library
-- [ ] Testnet integration for all 3 projects
+- [ ] Testnet integration for all 3 projects (DNS-blocked at last attempt)
 
 ### 📋 Planned (Phase 3+)
 - [ ] Unified Agent Runtime
@@ -437,4 +455,4 @@ If you use REDΣSIGMA in academic work, please cite:
 
 ---
 
-**REDΣSIGMA** — *The revolution is ready. The mathematics is verified.*
+**REDΣSIGMA** — *Every function carries a proof; the modelled subset is discharged by z3.*

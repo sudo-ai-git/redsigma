@@ -1,5 +1,13 @@
 # VeriScript Project Status Report
 
+> **SUPERSEDED (2026-11-12).** This report describes an older state: it claims the
+> parser is blocked on a Pest grammar and that the compiler pipeline is 89%
+> complete. Neither is true any more. The parser is a hand-written recursive
+> descent parser and compiles; `@verified` clauses are discharged by a z3
+> verifier (`verify/redsigma_verify.py`); `compile()` is still a stub.
+> Current state: `README.md`, `DEPLOYMENT_STATUS.md`, and `cargo test --workspace`.
+> The historical content below is kept for provenance only — do not cite it.
+
 ## Executive Summary
 
 **VeriScript** - The First Self-Verifying Smart Contract Language - has been architected and partially implemented. The framework successfully integrates the Tanakh 231-gate mathematical framework, Dual-Stream Gematria, and Verifiable Reasoning Engine (VRE) into a cohesive smart contract language where mathematical verification is INTRINSIC to the language itself.

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["compiler", "parser", "semantic", "causal", "dualstream", "reflection", "codegen", "runtime", "stdlib", "playground", "examples"]
+members = ["compiler", "parser", "semantic", "causal", "dualstream", "reflection", "codegen", "runtime", "stdlib", "playground", "examples", "contracts/test-contract"]
 [workspace.package]
 name = "redsigma"
 version = "0.1.0"

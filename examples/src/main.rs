@@ -96,7 +96,10 @@ fn print_contract(contract: &Contract) {
     println!("  Contract: {}", contract.name);
     println!("  Invariants: {}", contract.invariants.len());
     for inv in &contract.invariants {
-        println!("    - {}", inv.expression);
+        println!(
+            "    - {}",
+            redsigma_parser::expr_to_source(&inv.expr)
+        );
     }
     println!("  State fields: {}", contract.state.fields.len());
     for (name, ty) in &contract.state.fields {
@@ -106,9 +109,15 @@ fn print_contract(contract: &Contract) {
     for func in &contract.functions {
         println!("    fn {}()", func.name);
         if let Some(verified) = &func.verified {
+            let show = |label: &str, e: &Option<redsigma_parser::Expr>| match e {
+                Some(expr) => format!("{}: {}", label, redsigma_parser::expr_to_source(expr)),
+                None => format!("{}: -", label),
+            };
             println!(
-                "      @verified(pre: {:?}, post: {:?}, invariant: {:?})",
-                verified.pre, verified.post, verified.invariant
+                "      @verified({}, {}, {})",
+                show("pre", &verified.pre),
+                show("post", &verified.post),
+                show("invariant", &verified.invariant)
             );
         }
     }

@@ -6,6 +6,8 @@ description = "REDΣSIGMA dualstream module"
 license = "MIT"
 
 [dependencies]
+redsigma-parser = { path = "../parser" }
+redsigma-semantic = { path = "../semantic" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

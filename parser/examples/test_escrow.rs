@@ -24,7 +24,7 @@ fn main() {
             }
         }
     "#;
-    
+
     println!("Test: Escrow contract");
     match Parser::parse(escrow_contract) {
         Ok(contracts) => println!("Success: {:?}", contracts),
