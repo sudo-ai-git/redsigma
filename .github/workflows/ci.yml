@@ -17,8 +17,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install z3
-        run: pip install z3-solver
+      - name: Install z3 + wasmtime
+        run: pip install z3-solver wasmtime
 
       - name: cargo test --workspace
         run: cargo test --workspace
@@ -34,3 +34,6 @@ jobs:
 
       - name: examples verify as documented
         run: verify/check_examples.sh
+
+      - name: examples compile to VALID wasm
+        run: python3 verify/compile_examples.py

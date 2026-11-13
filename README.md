@@ -506,13 +506,41 @@ fn main() -> Result<(), CompilerError> {
     let contracts = parse_contract(source)?;
     println!("Parsed {} contract(s)", contracts.len());
 
-    // Compile to WASM (stub - full pipeline TODO)
+    // Compile to WASM: parse -> verify layers -> WAT -> WASM
     let wasm = compile(source)?;
     println!("Compiled to {} bytes", wasm.len());
 
     Ok(())
 }
 ```
+
+### Compiling to WASM
+
+```bash
+cargo run -p redsigma-compiler --example compile_to_wasm -- \
+  examples/verified_counter.redsigma /tmp/counter.wasm
+# wrote 106 bytes to /tmp/counter.wasm
+```
+
+The pipeline is: parse → semantic projection → dual-stream → reflection →
+causal memory → **WAT lowering** → **WASM assembly**. `compile()` is no longer a
+stub; it rejects a file with more than one contract (naming them) and returns
+real WASM bytes for a single contract.
+
+Structure checks are not enough to call a module valid — an empty stack at a
+`local.set` still passes them. The authoritative gate is `wasmtime.Module`:
+
+```bash
+python3 verify/compile_examples.py
+# ok    verified_counter.redsigma: 106 bytes, exports=['decrement', 'get', 'increment']
+# ok    counterexample.redsigma: 64 bytes, exports=['deposit']
+# ok    declined_division.redsigma: 58 bytes, exports=['halve']
+# ok    unsigned.redsigma: 57 bytes, exports=['set_max']
+# all 4 examples compile to valid WASM
+```
+
+`wasmtime.Module` validates the module (unlike `wat2wasm`, which only parses
+text), and CI runs this script on every push.
 
 ---
 
@@ -530,7 +558,7 @@ fn main() -> Result<(), CompilerError> {
 [integrity layers]            SemanticSpace · BijectiveVerifier · CausalMemory ·
                               DualStream · 6-Layer Reflection · 231-gate checksums
       ↓
-[redsigma-codegen]           WASM + proof objects        (stub)
+[redsigma-codegen]           WAT lowering + WASM assembly + proof objects
       ↓
 [redsigma-runtime]           NEAR deployment + verification
 ```
@@ -542,7 +570,7 @@ fn main() -> Result<(), CompilerError> {
 | `redsigma-causal` | CausalMemory with parent→child chains |
 | `redsigma-dualstream` | Dual-stream integrity (Mod-5 + Mod-37/73) |
 | `redsigma-reflection` | 6-layer self-reflection engine |
-| `redsigma-codegen` | Proof-carrying WASM codegen (stub) |
+| `redsigma-codegen` | WAT lowering + WASM assembly + proof objects |
 | `redsigma-runtime` | NEAR deployment / execution / proof verification |
 | `redsigma-stdlib` | Standard library primitives |
 | `redsigma-compiler` | Pipeline orchestration + verification input export |
@@ -551,9 +579,9 @@ fn main() -> Result<(), CompilerError> {
 
 ## NEAR testnet — live
 
-A **handwritten Rust** NEAR contract is deployed (it is *not* generated from a
-`.redsigma` file — `compile()` is a stub, so nothing on the deployed path
-exercises the language):
+A **handwritten Rust** NEAR contract is deployed. The compiler can now emit
+WASM from `.redsigma` source (see below), but the on-chain contract is still
+handwritten Rust — nothing on the deployed path exercises the generated code:
 
 | | |
 |---|---|
@@ -609,6 +637,8 @@ The 231-gate checksums must not be presented as a security mechanism.
   mixed boolean/integer arithmetic, and deeply nested ASTs.
 - Integrity layers: SemanticSpace, BijectiveVerifier, CausalMemory, DualStream,
   6-layer reflection, 231-gate checksums.
+- `compile()` produces real, wasmtime-validated WASM from `.redsigma` source
+  (all four examples, plus if/while/for/match control flow).
 - `cargo test --workspace`: 121 tests passing.
 - A NEAR test contract, deployed and exercised on testnet.
 
@@ -626,9 +656,11 @@ The 231-gate checksums must not be presented as a security mechanism.
 
 **Not implemented yet:**
 
-- `redsigma_compiler::compile()` is a stub — no WASM is generated from
-  `.redsigma` source. The deployed NEAR contract is handwritten Rust.
-- `redsigma-codegen` proof-carrying WASM is a stub.
+- The generated WASM is a plain module, not a NEAR contract — there is no
+  NEAR ABI / `near_bindgen` layer, so the deployed contract remains handwritten
+  Rust.
+- The compiler handles one contract per file; a multi-contract file is
+  rejected with the contract names.
 - Refinement types (`VerifiedU64<invariant: ...>`), compound assignment (`+=`),
   contract-level `struct`/`enum`, `Map`/`Set`/`Result`, and quantifiers are
   design sketches (see the headers of `examples/simple_counter.redsigma`,

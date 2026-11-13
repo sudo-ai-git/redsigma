@@ -1089,17 +1089,19 @@ mod tests {
 
     #[test]
     fn test_escrow_deposit() {
+        // u64, not u128: deploy_contract lowers through the WAT backend, whose
+        // compiled subset is u8..u64 (u128 is rejected rather than truncated).
         let input = r#"
             contract Escrow {
                 invariant balance >= 0;
                 invariant locked + released == total_deposited;
                 state {
-                    balance: u128,
-                    locked: u128,
-                    released: u128,
-                    total_deposited: u128,
+                    balance: u64,
+                    locked: u64,
+                    released: u64,
+                    total_deposited: u64,
                 }
-                fn deposit(amount: u128) -> u128 {
+                fn deposit(amount: u64) -> u64 {
                     let new_balance = balance + amount;
                     let new_locked = locked + amount;
                     let new_total = total_deposited + amount;
@@ -1108,7 +1110,7 @@ mod tests {
                     total_deposited = new_total;
                     new_locked;
                 }
-                fn get_balance() -> u128 { balance; }
+                fn get_balance() -> u64 { balance; }
             }
         "#;
 
@@ -1130,15 +1132,15 @@ mod tests {
         };
 
         // Deposit 100
-        let amount = 100u128.to_le_bytes().to_vec();
+        let amount = 100u64.to_le_bytes().to_vec();
         let result = runtime.execute(&account_id, "deposit", amount, context.clone()).unwrap();
-        let locked = u128::from_le_bytes(result.as_slice().try_into().unwrap_or([0; 16]));
+        let locked = u64::from_le_bytes(result.as_slice().try_into().unwrap_or([0; 8]));
         assert_eq!(locked, 100);
 
         // Deposit another 50
-        let amount = 50u128.to_le_bytes().to_vec();
+        let amount = 50u64.to_le_bytes().to_vec();
         let result = runtime.execute(&account_id, "deposit", amount, context).unwrap();
-        let locked = u128::from_le_bytes(result.as_slice().try_into().unwrap_or([0; 16]));
+        let locked = u64::from_le_bytes(result.as_slice().try_into().unwrap_or([0; 8]));
         assert_eq!(locked, 150);
     }
 

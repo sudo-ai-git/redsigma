@@ -770,25 +770,28 @@ mod runtime_edge_cases {
 
     #[test]
     fn test_runtime_escrow_workflow() {
+        // u64, not u128: deploy_contract lowers the contract through the WAT
+        // backend, whose compiled subset is u8..u64 (u128 is rejected rather
+        // than silently truncated).
         let input = r#"
             contract Escrow {
                 invariant balance >= 0;
                 invariant locked + released == total_deposited;
-                state { balance: u128, locked: u128, released: u128, total_deposited: u128 }
-                fn deposit(amount: u128) -> u128 {
+                state { balance: u64, locked: u64, released: u64, total_deposited: u64 }
+                fn deposit(amount: u64) -> u64 {
                     let nb = balance + amount;
                     let nl = locked + amount;
                     let nt = total_deposited + amount;
                     balance = nb; locked = nl; total_deposited = nt;
                     nl
                 }
-                fn release(amount: u128) -> u128 {
+                fn release(amount: u64) -> u64 {
                     let nr = released + amount;
                     let nl = locked - amount;
                     released = nr; locked = nl;
                     nr
                 }
-                fn get_locked() -> u128 { locked; }
+                fn get_locked() -> u64 { locked; }
             }
         "#;
         let mut runtime = NearRuntime::new();
@@ -814,7 +817,7 @@ mod runtime_edge_cases {
             .execute(
                 &account_id,
                 "deposit",
-                100u128.to_le_bytes().to_vec(),
+                100u64.to_le_bytes().to_vec(),
                 context.clone(),
             )
             .unwrap();
@@ -823,13 +826,13 @@ mod runtime_edge_cases {
             .execute(
                 &account_id,
                 "release",
-                30u128.to_le_bytes().to_vec(),
+                30u64.to_le_bytes().to_vec(),
                 context.clone(),
             )
             .unwrap();
         // Check locked = 70
         let result = runtime.view(&account_id, "get_locked", vec![]).unwrap();
-        let locked = u128::from_le_bytes(result.as_slice().try_into().unwrap_or([0; 16]));
+        let locked = u64::from_le_bytes(result.as_slice().try_into().unwrap_or([0; 8]));
         assert_eq!(locked, 70);
     }
 }

@@ -65,9 +65,11 @@ fixed with regression tests (self-test is now **18/18**, mutation-checked):
 
 ## Remaining gaps (not fixed — stated plainly)
 
-1. **There is no compiler.** `redsigma_compiler::compile()` is a stub and returns
-   an empty vector. No `.redsigma` file has ever become WASM, and nothing on the
-   deployed path exercises the language.
+1. ~~There is no compiler.~~ **FIXED** — `compile()` now lowers `.redsigma` to
+   WAT and assembles it with `wasm-encoder`; all four examples produce modules
+   that `wasmtime.Module` accepts (`verify/compile_examples.py`, also in CI).
+   What remains: the generated module is a plain WASM module, not a NEAR
+   contract.
 2. **The testnet contract is a handwritten placeholder.** It stores a counter and
    returns canned strings; `deploy_contract` ignores its `source` argument and
    `execute` ignores its `args`. It demonstrates state persistence and the NEAR

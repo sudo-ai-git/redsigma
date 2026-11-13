@@ -13,8 +13,10 @@ use thiserror::Error;
 use std::collections::HashMap;
 
 pub mod wat;
+pub mod wat2wasm;
 
 pub use wat::{collect_locals, emit_wat, is_supported_int};
+pub use wat2wasm::assemble;
 
 #[derive(Error, Debug)]
 pub enum CodegenError {
@@ -377,8 +379,11 @@ impl CodegenPipeline {
             None,
         );
 
-        // Generate WASM (simplified - returns placeholder bytecode)
-        let bytecode = self.generate_wasm_placeholder(contract)?;
+        // Lower to WAT, then assemble a real WASM module. This used to return a
+        // ~48-byte placeholder with empty sections, which is why the
+        // "proof-carrying WASM" claim had no artifact behind it.
+        let wat = emit_wat(contract)?;
+        let bytecode = assemble(&wat)?;
 
         // Create proof object
         let proof = ProofObject {
@@ -407,39 +412,6 @@ impl CodegenPipeline {
         })
     }
 
-    fn generate_wasm_placeholder(&self, contract: &Contract) -> Result<Vec<u8>, CodegenError> {
-        // Generate a minimal WASM module as placeholder
-        // In production, this would use wasm-encoder to generate real WASM
-        let mut bytecode = Vec::new();
-
-        // WASM magic number and version
-        bytecode.extend_from_slice(&[0x00, 0x61, 0x73, 0x6D]); // \0asm
-        bytecode.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version 1
-
-        // Type section (empty for placeholder)
-        bytecode.push(0x01); // type section
-        bytecode.push(0x00); // length 0
-
-        // Function section (empty for placeholder)
-        bytecode.push(0x03); // function section
-        bytecode.push(0x00); // length 0
-
-        // Export section
-        bytecode.push(0x07); // export section
-        bytecode.push(0x00); // length 0
-
-        // Code section
-        bytecode.push(0x0A); // code section
-        bytecode.push(0x00); // length 0
-
-        // Custom section for proof object
-        bytecode.push(0x00); // custom section
-        let proof_data = serde_json::to_vec(&format!("REDΣSIGMA Proof for {}", contract.name)).unwrap();
-        bytecode.push(proof_data.len() as u8);
-        bytecode.extend_from_slice(&proof_data);
-
-        Ok(bytecode)
-    }
 
     fn contract_to_source(&self, contract: &Contract) -> String {
         // The parser owns the canonical printer; this used to emit `{:?}` for
@@ -571,5 +543,54 @@ mod tests {
         let proof_json = serde_json::to_string(&result.proof).unwrap();
         assert!(proof_json.contains("Test"));
         assert!(proof_json.contains("gate231_checksum"));
+    }
+
+    #[test]
+    fn test_compile_emits_a_real_wasm_module() {
+        // Regression: compile() used to return a ~48-byte placeholder with four
+        // EMPTY sections, so the "proof-carrying WASM" claim had no artifact.
+        let input = r#"
+            contract Counter {
+                invariant count >= 0;
+                state { count: u64 }
+                fn increment() -> u64 { let n = count + 1; count = n; n; }
+            }
+        "#;
+        let contracts = Parser::parse(input).unwrap();
+        let mut pipeline = CodegenPipeline::new();
+        let result = pipeline.compile(&contracts[0]).unwrap();
+
+        assert_eq!(&result.bytecode[0..4], &[0x00, 0x61, 0x73, 0x6d]);
+        assert_eq!(&result.bytecode[4..8], &[0x01, 0x00, 0x00, 0x00]);
+        assert!(
+            result.bytecode.len() > 60,
+            "module is only {} bytes",
+            result.bytecode.len()
+        );
+        // A non-empty code section (id 10) must be present.
+        assert!(
+            result.bytecode.windows(1).any(|w| w[0] == 0x0A),
+            "no code section in the module"
+        );
+    }
+
+    #[test]
+    fn test_compile_lowers_control_flow() {
+        // if/else, while, for and match all lower through WAT into WASM.
+        let input = r#"
+            contract Ctl {
+                state { x: u64 }
+                fn f(a: u64) -> u64 {
+                    if (a > 0) { x = a; } else { x = 0; }
+                    while (x > 10) { x = x - 1; }
+                    for i in 0..3 { x = x + i; }
+                    match x { 0 => 1, 1 => 2, _ => 3 }
+                }
+            }
+        "#;
+        let contracts = Parser::parse(input).unwrap();
+        let mut pipeline = CodegenPipeline::new();
+        let result = pipeline.compile(&contracts[0]).unwrap();
+        assert_eq!(&result.bytecode[0..4], &[0x00, 0x61, 0x73, 0x6d]);
     }
 }

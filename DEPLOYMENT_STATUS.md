@@ -88,8 +88,10 @@ redeploy (`--force` without re-init).
 
 ## Next Steps
 
-1. Implement `compile()` — the REDΣSIGMA→WASM pipeline is still a stub, so the
-   deployed contract is handwritten Rust, not generated from a `.redsigma` file.
-2. Deploy a contract generated from REDΣSIGMA source once (1) exists.
+1. `compile()` now produces real WASM (WAT lowering + assembly, validated with
+   `wasmtime.Module`), but the generated module is a plain WASM module — not a
+   NEAR contract. Deploying generated code needs a NEAR ABI layer.
+2. Add a NEAR ABI layer (`near_bindgen` exports over the generated functions) so
+   a contract generated from `.redsigma` source can be deployed.
 3. Wire `@verified` verification into the deploy gate (refuse to deploy a
    contract with `Unverified`/`Counterexample` obligations).
