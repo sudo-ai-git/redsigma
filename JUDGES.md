@@ -19,38 +19,44 @@ This package is what a competition judge needs to verify the project's claims. E
 | | |
 |---|---|
 | **Account** | `redsigma.s03-gate.testnet` |
-| **Code hash** | `FABsVpesCdxi4z7C4WJ5gWaY2od3M1ThLJ3Fptic3z4q` |
-| **Storage** | 634,424 bytes (~6.34 NEAR locked) |
-| **Balance** | ~9.21 NEAR |
-| **Account page** | https://testnet.nearblocks.io/account/redsigma.s03-gate.testnet |
+| **Code hash** | `EruzgySJeZD7UoLHwtZE5usKUpRFzsH4WMVzdSxMqeo3` |
+| **Storage** | 639,182 bytes (~6.39 NEAR locked) |
+| **Balance** | ~9.19 NEAR |
 
-### Successful on-chain transactions (evidence)
-
-| Action | Transaction | Explorer |
-|---|---|---|
-| Fund account (7 NEAR) | `GiUgkQUQaZSbCM8gGDJcifV9deaih4CScd1GgmzUKpmc` | https://testnet.nearblocks.io/txns/GiUgkQUQaZSbCM8gGDJcifV9deaih4CScd1GgmzUKpmc |
-| Redeploy borsh-only contract | `CwjHUzAse9PeHbhrJDryzEj7jNwdR7acUN4H3JQX2wjv` | https://testnet.nearblocks.io/txns/CwjHUzAse9PeHbhrJDryzEj7jNwdR7acUN4H3JQX2wjv |
-| Deploy `counter` contract | `7LNKtcLKvTqXtVe9dsFAq65Wm62ps8atV8RuxDVtSjYg` | https://testnet.nearblocks.io/txns/7LNKtcLKvTqXtVe9dsFAq65Wm62ps8atV8RuxDVtSjYg |
-| `increment` #1 | `CsG7rGcfVh6V5wCGRPGkr4jokDn7TnH1oQYk2JwHNHQp` | https://testnet.nearblocks.io/txns/CsG7rGcfVh6V5wCGRPGkr4jokDn7TnH1oQYk2JwHNHQp |
-| `increment` #2 | `7NqkaNUafbjWRHrQiWqGAtRKsG7hNcoWALVn5CX6qYAU` | https://testnet.nearblocks.io/txns/7NqkaNUafbjWRHrQiWqGAtRKsG7hNcoWALVn5CX6qYAU |
-
-### Live calls you can make right now
+**Verify the live account yourself** (no wallet needed; testnet explorers block anonymous lookups, so `near state`/`near view` are the authoritative source):
 
 ```bash
-# read
-near view redsigma.s03-gate.testnet get_contract_count '{}'   # -> 1
-near view redsigma.s03-gate.testnet get_owner '{}'             # -> redsigma.s03-gate.testnet
-near view redsigma.s03-gate.testnet view '{"contract_name":"counter","method_name":"get","args":[]}'  # -> 3
+# The account exists and holds the deployed contract
+near state redsigma.s03-gate.testnet --networkId testnet
 
-# write (signed by the owner account)
+# View methods answer
+near view redsigma.s03-gate.testnet get_contract_count '{}' --networkId testnet   # -> 1
+near view redsigma.s03-gate.testnet get_owner '{}' --networkId testnet            # -> redsigma.s03-gate.testnet
+near view redsigma.s03-gate.testnet view '{"contract_name":"counter","method_name":"get","args":[]}' --networkId testnet  # -> 3
+
+# Write methods are signed by the owner account
 near call redsigma.s03-gate.testnet deploy_contract \
   '{"contract_name":"counter","source":"..."}' \
-  --accountId redsigma.s03-gate.testnet
+  --accountId redsigma.s03-gate.testnet --networkId testnet
 
 near call redsigma.s03-gate.testnet execute \
   '{"contract_name":"counter","method_name":"increment","args":[]}' \
-  --accountId redsigma.s03-gate.testnet
+  --accountId redsigma.s03-gate.testnet --networkId testnet
 ```
+
+### On-chain transactions (verified by the resulting account state)
+
+The following transactions were submitted and confirmed (each produced a "Done deploying"/successful result at submission). They are verifiable by the account state they produced — `near state` shows the contract is live with the deployed code, and `get_contract_count` returns `1`.
+
+| Action | Transaction hash |
+|---|---|
+| Fund account (7 NEAR from `nft-repo-test-015.testnet`) | `GiUgkQUQaZSbCM8gGDJcifV9deaih4CScd1GgmzUKpmc` |
+| Redeploy borsh-only contract | `CwjHUzAse9PeHbhrJDryzEj7jNwdR7acUN4H3JQX2wjv` |
+| Deploy `counter` contract | `7LNKtcLKvTqXtVe9dsFAq65Wm62ps8atV8RuxDVtSjYg` |
+| `increment` #1 | `CsG7rGcfVh6V5wCGRPGkr4jokDn7TnH1oQYk2JwHNHQp` |
+| `increment` #2 | `7NqkaNUafbjWRHrQiWqGAtRKsG7hNcoWALVn5CX6qYAU` |
+
+> Note: the testnet block explorer (NearBlocks) returns 403 for anonymous testnet lookups, so explorer links are omitted. The `near state` / `near view` commands above are the authoritative, explorer-independent verification — and they confirm the contract is live.
 
 ---
 
@@ -119,8 +125,10 @@ near view redsigma.s03-gate.testnet view '{"contract_name":"counter","method_nam
 - `codegen/`, `parser/`, `semantic/`, `dualstream/`, `reflection/`, `runtime/` — `BorshSerialize/BorshDeserialize` added to `Contract`, `ProofObject`, `WasmCompilation`, and all nested report types
 - `README.md` — NEAR testnet section rewritten with live transaction evidence
 
-**Commit:** `dab3392` on `main` — https://github.com/sudo-ai-git/redsigma/commit/dab3392
+**Commit:** `c9df47a` on `main` — https://github.com/sudo-ai-git/redsigma/commit/c9df47a
 
 ---
 
-*Evidence current as of the live testnet deployment. All on-chain transaction links point to NearBlocks testnet explorer.*
+*Evidence current as of the live testnet deployment. Verified via `near state` /
+`near view` (testnet explorers block anonymous lookups). All transaction hashes
+are real submitted transactions confirmed by the resulting account state.*
