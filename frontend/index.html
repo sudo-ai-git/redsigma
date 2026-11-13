@@ -242,6 +242,8 @@
 
         if (!wallet.isSignedIn()) {
           // Redirect to NEAR wallet for sign-in
+          setStatus(connectionStatus, 'Redirecting to NEAR wallet for authorization...', 'info');
+          await new Promise(r => setTimeout(r, 500)); // let the status render
           wallet.requestSignIn();
           return; // Page will redirect and reload
         }
