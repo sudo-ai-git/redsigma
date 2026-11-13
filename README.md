@@ -622,6 +622,13 @@ near call redsigma.s03-gate.testnet execute \
 The account holds ~9.21 NEAR with ~6.34 NEAR locked as storage stake, leaving
 ~2.87 NEAR headroom for additional contract deployments.
 
+## Judge evidence package
+
+See [`JUDGES.md`](JUDGES.md) for the competition evidence package: the live
+on-chain transaction links, all verification gates (each can fail), the 4
+execution cases that prove the generated WASM actually computes correctly, and
+the honest limitations.
+
 ---
 
 ## Live Demo
