@@ -970,7 +970,19 @@ fn run_function(
     };
 
     // Define `result` in the post-state interpreter for postcondition checking.
+    //
+    // The parameter bindings must be RE-DEFINED here, not just `result`. The
+    // `pop_scope()` above discards the function's parameter scope along with
+    // the body's locals, so a postcondition that mentions a parameter
+    // (`post: balance == old(balance) + amount`) could not be evaluated at
+    // all: every call failed with "Unknown identifier: amount" and rolled
+    // back. A contract the z3 verifier happily proves was therefore
+    // permanently unusable on chain — it failed safe (no bad state was
+    // persisted), but no legal call could ever succeed either.
     interpreter.push_scope();
+    for (name, value) in &param_values {
+        interpreter.define(name, value.clone());
+    }
     interpreter.define("result", result.clone());
 
     // --- Postcondition check ---
@@ -1921,6 +1933,79 @@ mod tests {
             .expect_err("postcondition result == old(x) + 1 should reject x+2");
         assert!(
             err.to_string().contains("Postcondition failed"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    /// Regression: a postcondition that references a PARAMETER.
+    ///
+    /// `run_function` pops the function's scope after the body executes, which
+    /// discarded the parameter bindings along with the body's locals. The
+    /// postcondition was then evaluated with only `result` defined in scope, so
+    /// any clause mentioning a parameter failed with "Unknown identifier:
+    /// amount" -- NOT with the intended "Postcondition failed". The contract
+    /// failed safe (state rolled back, nothing bad was persisted), but every
+    /// call failed, so a contract the z3 verifier proves correctly was
+    /// permanently unusable on chain.
+    ///
+    /// The parameters must be re-bound for the postcondition, exactly as
+    /// `result` already was.
+    #[test]
+    fn test_postcondition_may_reference_parameters() {
+        let input = r#"
+            contract Vault {
+                invariant balance >= 0;
+                state { balance: u64 }
+                @verified(
+                    pre: amount > 0,
+                    post: balance == old(balance) + amount
+                )
+                fn deposit(amount: u64) -> u64 { balance = balance + amount; balance; }
+                fn get() -> u64 { balance; }
+            }
+        "#;
+
+        let mut runtime = NearRuntime::new();
+        let account_id = AccountId::new("vault.testnet".to_string());
+        let deployer = AccountId::new("owner.testnet".to_string());
+        runtime
+            .deploy_contract(account_id.clone(), input, deployer, 1000)
+            .unwrap();
+
+        let context = ExecutionContext {
+            contract_id: account_id.clone(),
+            caller_id: AccountId::new("alice.testnet".to_string()),
+            predecessor_id: AccountId::new("alice.testnet".to_string()),
+            attached_deposit: 0,
+            prepaid_gas: 100_000_000_000,
+            block_height: 1001,
+            block_timestamp: 1_000_000_000_000_000_000,
+            random_seed: vec![],
+        };
+
+        // The parameter must be visible to the postcondition, and the
+        // postcondition must actually hold.
+        let r1 = runtime
+            .execute(&account_id, "deposit", 49u64.to_le_bytes().to_vec(), context.clone())
+            .expect("deposit(49) must satisfy balance == old(balance) + amount");
+        assert_eq!(u64::from_le_bytes(r1.as_slice().try_into().unwrap()), 49);
+
+        let r2 = runtime
+            .execute(&account_id, "deposit", 51u64.to_le_bytes().to_vec(), context.clone())
+            .expect("deposit(51) must satisfy balance == old(balance) + amount");
+        assert_eq!(u64::from_le_bytes(r2.as_slice().try_into().unwrap()), 100);
+
+        // The two deposits must have accumulated.
+        let got = runtime.view(&account_id, "get", vec![]).unwrap();
+        assert_eq!(u64::from_le_bytes(got.as_slice().try_into().unwrap()), 100);
+
+        // The precondition must still be enforced: `amount > 0` rejects 0.
+        let err = runtime
+            .execute(&account_id, "deposit", 0u64.to_le_bytes().to_vec(), context)
+            .expect_err("pre: amount > 0 must reject amount = 0");
+        assert!(
+            err.to_string().contains("Precondition failed"),
             "unexpected error: {}",
             err
         );
