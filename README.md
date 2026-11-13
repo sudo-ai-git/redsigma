@@ -609,6 +609,17 @@ file — see **Project status** below.
 
 ---
 
+## Live Demo
+
+Try the frontend demo on GitHub Pages:
+
+👉 **[REDΣSIGMA Frontend Demo](https://sudo-ai-git.github.io/redsigma/)**
+
+Connect a NEAR testnet wallet, deploy `.redsigma` contracts, execute methods,
+and read contract state — all from the browser.
+
+---
+
 ## Mathematical foundation
 
 REDΣSIGMA integrates the **Tanakh 231-gate** integrity framework (SUM / LINEAR /
