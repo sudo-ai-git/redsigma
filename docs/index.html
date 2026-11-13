@@ -168,17 +168,19 @@
       </div>
 
       <div>
-        <h2>4. Contract State</h2>
+        <h2>4. Read Contract State (via view)</h2>
         <div class="row">
           <div class="col">
             <label>Contract Name</label>
             <input type="text" id="stateContract" value="counter" placeholder="e.g. counter" />
           </div>
           <div class="col">
-            <label>State Key (field name)</label>
-            <input type="text" id="stateKey" value="count" placeholder="e.g. count" />
+            <label>Getter Method (e.g. get, get_balance, get_count)</label>
+            <input type="text" id="stateMethod" value="get" placeholder="e.g. get" />
           </div>
         </div>
+        <label>Getter Args (raw bytes, UTF-8)</label>
+        <textarea id="stateArgs" rows="2" placeholder="leave empty for no args"></textarea>
         <button id="stateBtn" class="secondary" disabled>Read State</button>
         <div id="stateStatus"></div>
         <pre id="stateResult" style="display:none;"></pre>
@@ -349,26 +351,34 @@
 
     async function readState() {
       const contractName = document.getElementById('stateContract').value;
-      const key = document.getElementById('stateKey').value;
+      const methodName = document.getElementById('stateMethod').value;
+      const argsText = document.getElementById('stateArgs').value;
+
+      let args = [];
+      if (argsText.trim()) {
+        args = new TextEncoder().encode(argsText);
+      }
 
       stateBtn.disabled = true;
-      setStatus(stateStatus, 'Reading state...', 'info');
+      setStatus(stateStatus, 'Reading state via view...', 'info');
       hideStatus(stateResult);
 
       try {
-        const result = await callContract('get_state', {
+        const result = await callContract('view', {
           contract_name: contractName,
-          key: key,
-        }, true);
+          method_name: methodName,
+          args: Array.from(args),
+        }, false);
 
         if (result && result.result) {
           const bytes = new Uint8Array(result.result);
           const text = new TextDecoder().decode(bytes);
+          const asHex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
           setStatus(stateStatus, 'State read successfully', 'ok');
-          stateResult.textContent = 'Key: ' + key + '\nValue (hex): ' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ') + '\nValue (text): ' + text;
+          stateResult.textContent = 'Contract: ' + contractName + '\\nMethod: ' + methodName + '\\nReturn bytes (hex): ' + asHex + '\\nReturn text: ' + text;
         } else {
-          setStatus(stateStatus, 'No state found for key', 'warn');
-          stateResult.textContent = 'No value stored for key "' + key + '"';
+          setStatus(stateStatus, 'No result returned', 'warn');
+          stateResult.textContent = 'No value returned from ' + methodName;
         }
         stateResult.style.display = 'block';
       } catch (err) {
