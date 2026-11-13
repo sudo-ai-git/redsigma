@@ -579,25 +579,35 @@ text), and CI runs this script on every push.
 
 ## NEAR testnet — live
 
-A NEAR contract is deployed and answering views. The **running** code on
-`redsigma.s03-gate.testnet` was built from the previous revision of
-`contracts/test-contract`, which used a hand-written runtime interpreter:
-`.redsigma` source is parsed and proof-checked on chain, but the *execution*
-of a method runs through the interpreter, not through WASM produced by this
-compiler.
+The borsh-only `contracts/test-contract` is deployed and answering views on
+NEAR testnet. `.redsigma` source is parsed, proof-checked, compiled through the
+full verification pipeline, and stored on chain; method execution runs through
+the `NearRuntime` interpreter over the contract AST with proof re-verification
+and invariant enforcement.
 
 | | |
 |---|---|
 | Account | `redsigma.s03-gate.testnet` |
-| Code hash | `5Tc9emgMWUQSmmBuh9VuXH4RD4ygniQ5ZqkGcz1VvFqq` |
-| Storage | 185,925 bytes (≈1.86 NEAR locked) |
-| Balance | ~2.22 NEAR |
-| View check | `near view redsigma.s03-gate.testnet get_contract_count '{}'` → `2` |
+| Code hash | `FABsVpesCdxi4z7C4WJ5gWaY2od3M1ThLJ3Fptic3z4q` |
+| Storage | 634,424 bytes (~6.34 NEAR locked) |
+| Balance | ~9.21 NEAR |
+| Explorer | https://testnet.nearblocks.io/account/redsigma.s03-gate.testnet |
+
+### Evidence (successful on-chain transactions)
+
+| Action | Transaction | Explorer |
+|--------|-------------|----------|
+| Fund account (7 NEAR) | `GiUgkQUQaZSbCM8gGDJcifV9deaih4CScd1GgmzUKpmc` | https://testnet.nearblocks.io/txns/GiUgkQUQaZSbCM8gGDJcifV9deaih4CScd1GgmzUKpmc |
+| Redeploy borsh-only contract | `CwjHUzAse9PeHbhrJDryzEj7jNwdR7acUN4H3JQX2wjv` | https://testnet.nearblocks.io/txns/CwjHUzAse9PeHbhrJDryzEj7jNwdR7acUN4H3JQX2wjv |
+| Deploy `counter` contract | `7LNKtcLKvTqXtVe9dsFAq65Wm62ps8atV8RuxDVtSjYg` | https://testnet.nearblocks.io/txns/7LNKtcLKvTqXtVe9dsFAq65Wm62ps8atV8RuxDVtSjYg |
+| `increment` #1 | `CsG7rGcfVh6V5wCGRPGkr4jokDn7TnH1oQYk2JwHNHQp` | https://testnet.nearblocks.io/txns/CsG7rGcfVh6V5wCGRPGkr4jokDn7TnH1oQYk2JwHNHQp |
+| `increment` #2 | `7NqkaNUafbjWRHrQiWqGAtRKsG7hNcoWALVn5CX6qYAU` | https://testnet.nearblocks.io/txns/7NqkaNUafbjWRHrQiWqGAtRKsG7hNcoWALVn5CX6qYAU |
 
 ```bash
 # read
-near view redsigma.s03-gate.testnet get_contract_count '{}'    # -> 2
+near view redsigma.s03-gate.testnet get_contract_count '{}'    # -> 1
 near view redsigma.s03-gate.testnet get_owner '{}'              # -> redsigma.s03-gate.testnet
+near view redsigma.s03-gate.testnet view '{"contract_name":"counter","method_name":"get","args":[]}'  # -> 3
 
 # write (must be signed by the owner)
 near call redsigma.s03-gate.testnet deploy_contract \
@@ -609,23 +619,8 @@ near call redsigma.s03-gate.testnet execute \
   --accountId redsigma.s03-gate.testnet
 ```
 
-**Redeploying is blocked by storage cost, not by correctness.**
-Rebuilding `contracts/test-contract` now that it depends on the codegen crates
-produces a **838,148-byte** module (~478,000 bytes of it in the code section —
-the whole compiler/verifier chain linked in). Storing that costs ≈8.38 NEAR at
-the 1e-5 NEAR/byte rate and the account holds 2.22 NEAR, so a redeploy is
-≈6.16 NEAR short. `opt-level="z"` + `lto=true` + `wee_alloc` are set; what is
-left is the real cost of bundling the compiler into the contract, not a tuning
-problem. Until it is resolved, the deployed contract stays on the interpreter
-path described above.
-
-Attributed by symbol rather than guessed, the module body bytes are:
-`serde_json` ~89,000, `redsigma_parser` ~23,000, `core::panic`/formatting
-~12,300, `redsigma_codegen` ~12,400. The contract uses `serde_json` for exactly
-one job — serialising `ContractData` — so a borsh switch is the obvious next
-step, but it is not done yet: `ProofObject` and `Contract` are serde-only
-upstream, and the deployed contract holds 2 entries in the current JSON format.
-See DEPLOYMENT_STATUS.md for the full attribution and the attempts that failed.
+The account holds ~9.21 NEAR with ~6.34 NEAR locked as storage stake, leaving
+~2.87 NEAR headroom for additional contract deployments.
 
 ---
 
