@@ -238,12 +238,20 @@
           explorerUrl: 'https://explorer.testnet.near.org',
         });
         wallet = new WalletConnection(near, 'redsigma-demo');
-        account = wallet.account();
         contractId = document.getElementById('contractId').value;
+
+        if (!wallet.isSignedIn()) {
+          // Redirect to NEAR wallet for sign-in
+          wallet.requestSignIn();
+          return; // Page will redirect and reload
+        }
+
+        account = wallet.account();
+        const accountId = account.accountId || (await account.getAccountId()).account_id;
 
         connectBtn.style.display = 'none';
         disconnectBtn.style.display = 'inline-block';
-        setStatus(connectionStatus, 'Connected as: ' + (await account.getAccountId()).account_id, 'ok');
+        setStatus(connectionStatus, 'Connected as: ' + accountId, 'ok');
 
         // Enable buttons
         deployBtn.disabled = false;
