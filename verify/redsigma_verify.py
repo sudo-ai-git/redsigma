@@ -407,6 +407,15 @@ def execute_body(
 
         if tag in ("Let", "Const"):
             name = body_s["name"]
+            if name in state:
+                # A local with the same name as a state field makes every
+                # postcondition ambiguous: `post: count == 0` would read the
+                # local (which dies at return) instead of the field, so the
+                # verifier would prove a statement about nothing. Decline it.
+                raise Decline(
+                    f"local '{name}' shadows state field '{name}'; postconditions "
+                    "about state would be unsound"
+                )
             ty = body_s.get("ty")
             width = declared_width(ty["name"]) if isinstance(ty, dict) else None
             declared_sign = type_signed(ty["name"]) if isinstance(ty, dict) else None
@@ -416,11 +425,13 @@ def execute_body(
             )
             # An explicit annotation wins over the inferred type; without one
             # the value's own type is kept.
-            env[name] = (
+            binding = (
                 value,
                 width if width is not None else vwidth,
                 declared_sign if declared_sign is not None else vsigned,
             )
+            _check_binding(name, binding, "local")
+            env[name] = binding
             continue
 
         if tag == "Expr":
@@ -466,6 +477,36 @@ def _binding_of(
     return None, None
 
 
+def _check_binding(name: str, binding: Binding, where: str) -> None:
+    """Refuse a binding whose z3 term does not match its declared type.
+
+    Without this, `x = y` with `x: u8` and `y: u64` stores a 64-bit term under a
+    binding recorded as 8-bit; the recorded width then drives the literal width
+    for later comparisons while the term keeps its real sort, and z3 raises a
+    sort mismatch (or worse, silently compares different widths).
+    """
+    term, width, signed = binding
+    if width is None:
+        if not z3.is_bool(term):
+            raise Decline(
+                f"{where} '{name}' is declared boolean but the value is an integer"
+            )
+        return
+    if z3.is_bool(term):
+        raise Decline(
+            f"{where} '{name}' is declared {'i' if signed else 'u'}{width} "
+            "but the value is boolean"
+        )
+    if not z3.is_bv(term):
+        raise Decline(f"{where} '{name}' has a non-bitvector value")
+    if term.size() != width:
+        kind = "i" if signed else "u"
+        raise Decline(
+            f"{where} '{name}' is declared {kind}{width} but the value is "
+            f"{term.size()}-bit (mixed-width assignment is not silently truncated)"
+        )
+
+
 def _assign(
     name: str,
     value: Any,
@@ -474,10 +515,14 @@ def _assign(
     declines: List[str],
 ) -> None:
     if name in env:
-        env[name] = (value, env[name][1], env[name][2])
+        binding = (value, env[name][1], env[name][2])
+        _check_binding(name, binding, "assignment to local")
+        env[name] = binding
         return
     if name in state:
-        state[name] = (value, state[name][1], state[name][2])
+        binding = (value, state[name][1], state[name][2])
+        _check_binding(name, binding, "assignment to state field")
+        state[name] = binding
         return
     raise Decline(f"assignment to unknown name {name!r}")
 
@@ -506,7 +551,11 @@ class FunctionReport:
         return bool(self.obligations) and all(o.status == "Proven" for o in self.obligations)
 
 
-def verify_function(fn: Dict[str, Any], state_types: Dict[str, str]) -> FunctionReport:
+def verify_function(
+    fn: Dict[str, Any],
+    state_types: Dict[str, str],
+    contract_invariants: Optional[List[Any]] = None,
+) -> FunctionReport:
     report = FunctionReport(name=fn["name"])
 
     env: Dict[str, Binding] = {}
@@ -545,9 +594,16 @@ def verify_function(fn: Dict[str, Any], state_types: Dict[str, str]) -> Function
         goals.append(("post", post))
     if invariant is not None:
         goals.append(("invariant", invariant))
+    # Contract-level invariants are obligations on EVERY function: assume they
+    # hold before the call, prove they hold after it. Without this they are
+    # exported to JSON and then silently ignored.
+    for i, inv in enumerate(contract_invariants or []):
+        goals.append((f"contract_invariant[{i}]", inv))
 
     if not goals:
-        report.declines.append("no postcondition and no invariant clause")
+        report.declines.append(
+            "no postcondition, no invariant clause and no contract invariant"
+        )
         return report
 
     pre_term = z3.BoolVal(True)
@@ -595,11 +651,11 @@ def verify_function(fn: Dict[str, Any], state_types: Dict[str, str]) -> Function
 
         solver = z3.Solver()
         solver.add(pre_term)
-        if kind == "invariant":
+        if kind != "post":
+            # Inductive invariant protocol: assume the invariant held in the
+            # pre-state, then prove it still holds in the post-state.
             try:
-                inv_pre_raw, _, _ = eval_expr(
-                    invariant, env_pre, state_pre, report.declines
-                )
+                inv_pre_raw, _, _ = eval_expr(expr, env_pre, state_pre, report.declines)
                 solver.add(as_bool(inv_pre_raw, report.declines))
             except Decline as d:
                 report.obligations.append(
@@ -649,8 +705,63 @@ def _model_value(model: z3.ModelRef, term: Any) -> str:
 
 
 def verify_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
-    state_types = {f["name"]: f["type"] for f in contract.get("state", [])}
-    reports = [verify_function(fn, state_types) for fn in contract.get("functions", [])]
+    if not isinstance(contract, dict):
+        r = FunctionReport(name="?")
+        r.declines.append(f"verification input is not an object: {type(contract).__name__}")
+        return {
+            "contract": None,
+            "functions": [],
+            "summary": {
+                "proven": 0, "counterexample": 0, "unverified": 0,
+                "declines": 1, "all_proven": False,
+            },
+        }
+
+    state_types: Dict[str, str] = {}
+    malformed: List[str] = []
+
+    raw_state = contract.get("state", [])
+    if not isinstance(raw_state, list):
+        malformed.append(f"'state' is not a list: {type(raw_state).__name__}")
+        raw_state = []
+    for f in raw_state:
+        if not isinstance(f, dict) or "name" not in f or "type" not in f:
+            malformed.append(f"malformed state entry {f!r}")
+            continue
+        state_types[f["name"]] = f["type"]
+
+    contract_invariants = contract.get("invariants") or []
+    if not isinstance(contract_invariants, list):
+        malformed.append(f"'invariants' is not a list: {type(contract_invariants).__name__}")
+        contract_invariants = []
+
+    raw_functions = contract.get("functions", [])
+    if not isinstance(raw_functions, list):
+        malformed.append(f"'functions' is not a list: {type(raw_functions).__name__}")
+        raw_functions = []
+
+    reports: List[FunctionReport] = []
+    for fn in raw_functions:
+        if not isinstance(fn, dict):
+            r = FunctionReport(name=repr(fn)[:40])
+            r.declines.append(f"function entry is not an object: {fn!r}")
+            reports.append(r)
+            continue
+        try:
+            reports.append(verify_function(fn, state_types, contract_invariants))
+        except (KeyError, TypeError) as exc:
+            # A hand-edited JSON document can omit keys the exporter always
+            # writes. That is a malformed input, not a traceback.
+            r = FunctionReport(name=str(fn.get("name", "?")))
+            r.declines.append(f"malformed verification input: {exc}")
+            reports.append(r)
+
+    if not reports:
+        r = FunctionReport(name=str(contract.get("contract", "?")))
+        r.declines.extend(malformed or ["no functions to verify"])
+        reports.append(r)
+    elif malformed:
+        reports[0].declines.extend(malformed)
 
     obligations = [o for r in reports for o in r.obligations]
     declines = [d for r in reports for d in r.declines]
@@ -732,7 +843,8 @@ def _neg(value: Any) -> Dict[str, Any]:
     return {"Unary": {"op": "Neg", "expr": value}}
 
 
-def _contract(name: str, state: List[Any], fn: Dict[str, Any]) -> Dict[str, Any]:
+def _contract(name: str, state: List[Any], fn: Dict[str, Any],
+              invariants: Optional[List[Any]] = None) -> Dict[str, Any]:
     # state entries are either a name (default u64) or a (name, type) pair.
     fields = []
     for item in state:
@@ -740,7 +852,10 @@ def _contract(name: str, state: List[Any], fn: Dict[str, Any]) -> Dict[str, Any]
             fields.append({"name": item[0], "type": item[1]})
         else:
             fields.append({"name": item, "type": "u64"})
-    return {"contract": name, "state": fields, "functions": [fn]}
+    out: Dict[str, Any] = {"contract": name, "state": fields, "functions": [fn]}
+    if invariants:
+        out["invariants"] = invariants
+    return out
 
 
 def _fn(name: str, body: List[Any], pre: Any = None, post: Any = None,
@@ -922,6 +1037,55 @@ _SELFTEST_CASES = [
             ),
         ),
         {"post": "Proven"},
+    ),
+    (
+        # Regression: a local with the same name as a state field made
+        # `post: count == 0` read the local (which dies at return) and PROVE.
+        "a local cannot shadow a state field",
+        _contract(
+            "Shadow",
+            ["count"],
+            _fn(
+                "fake_reset",
+                [{"Let": {"mutable": False, "name": "count", "ty": None,
+                          "value": _num(0)}}, _ret(None)],
+                pre={"Bool": True},
+                post=_bin("Eq", _id("count"), _num(0)),
+            ),
+        ),
+        {"post": "Unverified"},
+    ),
+    (
+        # Regression: contract-level invariants were exported but never checked.
+        "contract-level invariants are discharged per function",
+        _contract(
+            "ContractInv",
+            ["x"],
+            _fn(
+                "set1",
+                [_set("x", _num(1)), _ret(None)],
+                pre={"Bool": True},
+                post=_bin("Eq", _id("x"), _num(1)),
+            ),
+            invariants=[_bin("Eq", _id("x"), _num(0))],
+        ),
+        {"post": "Proven", "contract_invariant[0]": "Counterexample"},
+    ),
+    (
+        # Regression: `x = y` across widths stored a 64-bit term under a u8
+        # binding; z3 then raised a sort mismatch instead of returning a verdict.
+        "mixed-width assignment is declined, not silently truncated",
+        _contract(
+            "MixedWidth",
+            [("x", "u8"), ("y", "u64")],
+            _fn(
+                "copy",
+                [_set("x", _id("y")), _ret(None)],
+                pre={"Bool": True},
+                post=_bin("Ge", _id("x"), _num(0)),
+            ),
+        ),
+        {"post": "Unverified"},
     ),
 ]
 

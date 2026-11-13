@@ -38,7 +38,7 @@ pip install z3-solver
 git clone https://github.com/sudo-ai-git/redsigma
 cd redsigma
 cargo build --release --workspace
-cargo test --workspace          # 118 tests
+cargo test --workspace          # 121 tests
 ```
 
 ### Verify your first contract
@@ -391,8 +391,11 @@ PASS  hex literal 0xFF is 255: {'post': 'Proven'}
 PASS  literal beyond u64 is declined, not truncated: {'post': 'Unverified'}
 PASS  boolean arithmetic is declined (z3 sort mismatch): {'post': 'Unverified'}
 PASS  -2**63 is representable as an i64 literal: {'post': 'Proven'}
+PASS  a local cannot shadow a state field: {'post': 'Unverified'}
+PASS  contract-level invariants are discharged per function: {'post': 'Proven', 'contract_invariant[0]': 'Counterexample'}
+PASS  mixed-width assignment is declined, not silently truncated: {'post': 'Unverified'}
 
-self-test: 11/11 cases as expected
+self-test: 14/14 cases as expected
 ```
 
 Each case names the verdict it expects, so the gate is falsifiable: reverting
@@ -416,6 +419,7 @@ the `old()` pre-state fix, the unsigned-comparison fix, the shift masking, the
 | `/` `%` | **declined** |
 | calls, loops, `if`/`while`/`for`/`match`, strings, arrays, structs, indexing, field access | **declined** |
 | mixed-width, mixed-signedness, or mixed boolean/integer arithmetic | **declined**, not silently extended |
+| a `let`/`const` that shadows a state field | **declined** — otherwise a postcondition reads the local and proves a false statement |
 | numeric literals that do not fit the declared width | **declined**, not truncated |
 
 A declined construct is recorded and the remaining obligations are still
@@ -452,6 +456,10 @@ fn name(params) -> ReturnType { ... }
 
 Every function must carry `@verified`; a function with no clauses is reported as
 **not passed**, never as proven.
+
+Contract-level `invariant` statements are discharged too: each one is checked
+against **every** function (reported as `contract_invariant[i]`), assumed in the
+pre-state and proved in the post-state.
 
 ### Statements and expressions
 
@@ -589,14 +597,14 @@ compiler pipeline.
 **Working and verified by execution:**
 
 - Parser for the subset described above; `@verified` clauses captured as AST.
-- z3 tri-state verifier with a falsifiable 11/11 self-test.
+- z3 tri-state verifier with a falsifiable 14/14 self-test.
 - Hostile-input probes: the parser returns a clean error (never SIGABRT) on
   deep nesting, unterminated comments/strings and malformed literals; the
   verifier returns `Unverified` (never a traceback) on malformed literals,
   mixed boolean/integer arithmetic, and deeply nested ASTs.
 - Integrity layers: SemanticSpace, BijectiveVerifier, CausalMemory, DualStream,
   6-layer reflection, 231-gate checksums.
-- `cargo test --workspace`: 118 tests passing.
+- `cargo test --workspace`: 121 tests passing.
 - A NEAR test contract, deployed and exercised on testnet.
 
 **Not implemented yet:**

@@ -150,6 +150,27 @@ CASES = [
      contract("NoState", [],
               [fn("f", [ret(num("1"))], pre={"Bool": True}, post={"Bool": True})]),
      "no-crash"),
+    # Malformed verification input: the exporter always writes these keys, but
+    # a hand-edited document may omit them. That is a decline, not a traceback.
+    ("function missing body",
+     {"contract": "X", "state": [],
+      "functions": [{"name": "f", "params": [], "pre": {"Bool": True},
+                     "post": {"Bool": True}}]},
+     "no-crash"),
+    ("function missing name",
+     {"contract": "X", "state": [],
+      "functions": [{"params": [], "pre": {"Bool": True}, "post": {"Bool": True},
+                     "body": []}]},
+     "no-crash"),
+    ("state entry missing type",
+     {"contract": "X", "state": [{"name": "x"}],
+      "functions": [{"name": "f", "params": [], "pre": {"Bool": True},
+                     "post": {"Bool": True}, "body": []}]},
+     "no-crash"),
+    ("state is not a list", {"contract": "X", "state": "nope", "functions": []},
+     "no-crash"),
+    ("functions is not a list", {"contract": "X", "state": [], "functions": "nope"},
+     "no-crash"),
 ]
 
 

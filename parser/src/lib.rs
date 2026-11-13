@@ -216,6 +216,155 @@ pub enum UnOp {
 /// (~2 MiB), not just the 8 MiB main thread.
 const MAX_DEPTH: usize = 100;
 
+/// Maximum AST nesting depth. The source-level guard counts *recursive*
+/// nesting, but the postfix index loop (`a[0][0]...`) and the binary-operator
+/// loop (`1+1+1+...`) build arbitrarily deep trees iteratively, so a hostile
+/// file can still produce a tree that overflows the stack in any recursive
+/// walk (semantic projection, dual-stream hashing, codegen, reflection).
+const MAX_AST_DEPTH: usize = 200;
+
+enum AstNode<'a> {
+    Expr(&'a Expr, usize),
+    Stmt(&'a Stmt, usize),
+}
+
+/// Iterative AST depth check with an explicit stack (a recursive walk would
+/// itself overflow on the input it is trying to reject).
+fn ast_depth_ok(contract: &Contract) -> Result<(), String> {
+    let mut stack: Vec<AstNode> = Vec::new();
+    for inv in &contract.invariants {
+        stack.push(AstNode::Expr(&inv.expr, 1));
+    }
+    for f in &contract.functions {
+        for s in &f.body {
+            stack.push(AstNode::Stmt(s, 1));
+        }
+    }
+    while let Some(node) = stack.pop() {
+        match node {
+            AstNode::Expr(expr, depth) => {
+                if depth > MAX_AST_DEPTH {
+                    return Err(format!(
+                        "AST too deeply nested (max depth {})",
+                        MAX_AST_DEPTH
+                    ));
+                }
+                match expr {
+                    Expr::Binary { left, right, .. } => {
+                        stack.push(AstNode::Expr(left, depth + 1));
+                        stack.push(AstNode::Expr(right, depth + 1));
+                    }
+                    Expr::Unary { expr, .. } => stack.push(AstNode::Expr(expr, depth + 1)),
+                    Expr::Call { args, .. } => {
+                        for a in args {
+                            stack.push(AstNode::Expr(a, depth + 1));
+                        }
+                    }
+                    Expr::MethodCall { receiver, args, .. } => {
+                        stack.push(AstNode::Expr(receiver, depth + 1));
+                        for a in args {
+                            stack.push(AstNode::Expr(a, depth + 1));
+                        }
+                    }
+                    Expr::FieldAccess { receiver, .. } => {
+                        stack.push(AstNode::Expr(receiver, depth + 1))
+                    }
+                    Expr::Index { array, index } => {
+                        stack.push(AstNode::Expr(array, depth + 1));
+                        stack.push(AstNode::Expr(index, depth + 1));
+                    }
+                    Expr::Array(items) => {
+                        for i in items {
+                            stack.push(AstNode::Expr(i, depth + 1));
+                        }
+                    }
+                    Expr::Struct { fields, .. } => {
+                        for (_, v) in fields {
+                            stack.push(AstNode::Expr(v, depth + 1));
+                        }
+                    }
+                    Expr::Block(stmts) => {
+                        for s in stmts {
+                            stack.push(AstNode::Stmt(s, depth + 1));
+                        }
+                    }
+                    Expr::If {
+                        condition,
+                        then_branch,
+                        else_branch,
+                    } => {
+                        stack.push(AstNode::Expr(condition, depth + 1));
+                        stack.push(AstNode::Expr(then_branch, depth + 1));
+                        if let Some(e) = else_branch {
+                            stack.push(AstNode::Expr(e, depth + 1));
+                        }
+                    }
+                    Expr::Match { expr, arms } => {
+                        stack.push(AstNode::Expr(expr, depth + 1));
+                        for (_, a) in arms {
+                            stack.push(AstNode::Expr(a, depth + 1));
+                        }
+                    }
+                    Expr::Range { from, to } => {
+                        stack.push(AstNode::Expr(from, depth + 1));
+                        stack.push(AstNode::Expr(to, depth + 1));
+                    }
+                    _ => {}
+                }
+            }
+            AstNode::Stmt(stmt, depth) => {
+                if depth > MAX_AST_DEPTH {
+                    return Err(format!(
+                        "AST too deeply nested (max depth {})",
+                        MAX_AST_DEPTH
+                    ));
+                }
+                match stmt {
+                    Stmt::Let { value, .. } => stack.push(AstNode::Expr(value, depth + 1)),
+                    Stmt::Const { value, .. } => stack.push(AstNode::Expr(value, depth + 1)),
+                    Stmt::Expr(e) => stack.push(AstNode::Expr(e, depth + 1)),
+                    Stmt::Return(Some(e)) => stack.push(AstNode::Expr(e, depth + 1)),
+                    Stmt::If {
+                        condition,
+                        then_branch,
+                        else_branch,
+                    } => {
+                        stack.push(AstNode::Expr(condition, depth + 1));
+                        for s in then_branch {
+                            stack.push(AstNode::Stmt(s, depth + 1));
+                        }
+                        if let Some(eb) = else_branch {
+                            for s in eb {
+                                stack.push(AstNode::Stmt(s, depth + 1));
+                            }
+                        }
+                    }
+                    Stmt::While { condition, body } => {
+                        stack.push(AstNode::Expr(condition, depth + 1));
+                        for s in body {
+                            stack.push(AstNode::Stmt(s, depth + 1));
+                        }
+                    }
+                    Stmt::For { iter, body, .. } => {
+                        stack.push(AstNode::Expr(iter, depth + 1));
+                        for s in body {
+                            stack.push(AstNode::Stmt(s, depth + 1));
+                        }
+                    }
+                    Stmt::Match { expr, arms } => {
+                        stack.push(AstNode::Expr(expr, depth + 1));
+                        for (_, a) in arms {
+                            stack.push(AstNode::Expr(a, depth + 1));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub struct Parser {
     /// Source as a char vector: indexing a `String` by `chars().nth(pos)` is
     /// O(pos), which made the whole parser O(n²) on large files.
@@ -1368,6 +1517,9 @@ impl Parser {
         let contracts = parser.parse_program()?;
         if parser.unterminated_comment {
             return Err("Unterminated block comment".to_string());
+        }
+        for contract in &contracts {
+            ast_depth_ok(contract)?;
         }
         Ok(contracts)
     }
