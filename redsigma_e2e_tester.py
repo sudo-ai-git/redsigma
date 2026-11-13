@@ -47,22 +47,35 @@ class MockWeb3:
     async def eth_getChainId(self):
         return 0x1
 
+class MockNearAccount:
+    """Mock NEAR account with viewFunction and getAccountId."""
+    def __init__(self):
+        self.account_id = "testnet-user.testnet"
+
+    def getAccountId(self):
+        return {"account_id": self.account_id}
+
+    async def viewFunction(self, *args, **kwargs):
+        return {"result": "2"}
+
+    async def functionCall(self, *args, **kwargs):
+        return {"transaction": {"hash": "test_hash"}}
+
+
+class MockNearWallet:
+    """Mock NEAR wallet."""
+    def __init__(self):
+        self.isSignedIn = lambda: True
+        self.getAccountId = lambda: "testnet-user.testnet"
+        self.account = lambda: MockNearAccount()
+
+
 class MockNearConnection:
     """Mock NEAR connection for testing"""
-    
+
     def __init__(self):
         self.networkId = "testnet"
-        self.wallet = Mock()
-        self.wallet.isSignedIn.return_value = True
-        self.wallet.getAccountId.return_value = "testnet-user.testnet"
-        
-        # Create a proper mock account
-        mock_account = Mock()
-        mock_account.viewFunction = lambda *args, **kwargs: {"result": "2"}
-        mock_account.functionCall = lambda *args, **kwargs: {"transaction": {"hash": "test_hash"}}
-        mock_account.getAccountId = lambda *args, **kwargs: {"account_id": "testnet-user.testnet"}
-        
-        self.wallet.account.return_value = mock_account
+        self.wallet = MockNearWallet()
 
 class Mock:
     """Mock class for testing"""
@@ -125,9 +138,9 @@ class RedSigmaE2ETester:
         self.log_test("Test Environment Setup", True, "All dependencies mocked successfully")
     
     async def test_wallet_selection(self) -> bool:
-        """Test wallet selection functionality"""
+        """Test wallet selection functionality — NEAR Wallet only (WalletConnect removed)."""
         print("\n📝 Testing Wallet Selection...")
-        
+
         frontend_path = "/home/sudosudo/.openclaw/workspace/redsigma/frontend/index.html"
         try:
             with open(frontend_path, 'r') as f:
@@ -135,46 +148,59 @@ class RedSigmaE2ETester:
         except FileNotFoundError:
             print("❌ Frontend file not found")
             return False
-        
-        wallet_options_pattern = r'wallet-option.*walletconnect'
-        has_wallet_options = bool(re.search(wallet_options_pattern, content, re.IGNORECASE))
-        
-        selection_pattern = r'selectWallet.*near.*walletconnect'
-        has_selection = bool(re.search(selection_pattern, content, re.IGNORECASE))
-        
-        self.log_test("Wallet Selection UI", has_wallet_options, "Wallet options found in HTML")
-        self.log_test("Wallet Selection Logic", has_selection, "Wallet selection logic found in JavaScript")
-        
-        return has_wallet_options and has_selection
+
+        # Only NEAR Wallet option should exist
+        near_option_pattern = r'wallet-option.*near'
+        has_near_option = bool(re.search(near_option_pattern, content, re.IGNORECASE))
+
+        # WalletConnect option must be REMOVED (bridge dead + web3-provider is Ethereum not NEAR)
+        wc_option_pattern = r'wallet-option.*walletconnect'
+        has_wc_option = bool(re.search(wc_option_pattern, content, re.IGNORECASE))
+
+        # NEAR Wallet should be pre-selected
+        selected_pattern = r'wallet-option selected'
+        is_selected = bool(re.search(selected_pattern, content, re.IGNORECASE))
+
+        self.log_test("NEAR Wallet Option Present", has_near_option, "NEAR Wallet option found in HTML")
+        self.log_test("WalletConnect Option Removed", not has_wc_option, "No WalletConnect option (intentionally removed)")
+        self.log_test("NEAR Wallet Pre-selected", is_selected, "NEAR Wallet option is selected by default")
+
+        return has_near_option and not has_wc_option and is_selected
     
     async def test_walletconnect_connection(self) -> bool:
-        """Test WalletConnect connection flow"""
-        print("\n🔗 Testing WalletConnect Connection...")
-        
+        """Verify WalletConnect is intentionally removed — it cannot work for NEAR.
+
+        Verified root causes:
+        - bridge.walletconnect.org is unreachable (HTTP 000) — no session can be established.
+        - @walletconnect/web3-provider@1.8.0 + web3.eth.getAccounts() is an ETHEREUM
+          provider; it returns 0x... addresses, not NEAR ... .testnet account IDs.
+        """
+        print("\n🔗 Testing WalletConnect Removal (intentionally non-functional for NEAR)...")
+
+        frontend_path = "/home/sudosudo/.openclaw/workspace/redsigma/frontend/index.html"
         try:
-            self.mock_walletconnect = MockWalletConnect()
-            await self.mock_walletconnect.enable()
-            
-            session = await self.mock_walletconnect.createSession()
-            if not session or 'sessionId' not in session:
-                raise Exception("Session creation failed")
-            
-            if not self.mock_walletconnect.connected:
-                raise Exception("WalletConnect not properly connected")
-            
-            accounts = await self.mock_walletconnect.provider.eth_getAccounts()
-            if not accounts or len(accounts) == 0:
-                raise Exception("No accounts found")
-            
-            self.log_test("WalletConnect Initialization", True, "Provider initialized successfully")
-            self.log_test("Session Creation", True, f"Session created: {session['sessionId']}")
-            self.log_test("Account Access", True, f"Accounts accessible: {len(accounts)} accounts found")
-            
-            return True
-            
-        except Exception as e:
-            self.log_test("WalletConnect Connection", False, f"Connection failed: {str(e)}")
+            with open(frontend_path, 'r') as f:
+                content = f.read()
+        except FileNotFoundError:
+            print("❌ Frontend file not found")
             return False
+
+        # WalletConnect libraries must be ABSENT
+        no_wc_lib = not bool(re.search(r'@walletconnect/web3-provider', content))
+        no_web3 = not bool(re.search(r'web3@1\.10\.0', content))
+        # WalletConnect JS init must be ABSENT
+        no_init_wc = not bool(re.search(r'initWalletConnect', content))
+        no_wc_provider = not bool(re.search(r'WalletConnectProvider', content))
+        # web3 variable must be ABSENT
+        no_web3_var = not bool(re.search(r'\bweb3\b', content))
+
+        self.log_test("No web3-provider library", no_wc_lib, "@walletconnect/web3-provider removed")
+        self.log_test("No web3.js library", no_web3, "web3@1.10.0 removed")
+        self.log_test("No initWalletConnect", no_init_wc, "WalletConnect init removed")
+        self.log_test("No WalletConnectProvider", no_wc_provider, "WalletConnectProvider removed")
+        self.log_test("No web3 variable", no_web3_var, "web3 variable removed")
+
+        return all([no_wc_lib, no_web3, no_init_wc, no_wc_provider, no_web3_var])
     
     async def test_near_wallet_connection(self) -> bool:
         """Test NEAR Wallet connection flow"""
@@ -298,11 +324,12 @@ class RedSigmaE2ETester:
         
         tests_passed = 0
         total_tests = 3
-        
+
         try:
-            if self.current_wallet_type not in ['near', 'walletconnect']:
+            # Only NEAR is a valid wallet type now; 'walletconnect' is rejected
+            if self.current_wallet_type not in ['near', None]:
                 raise ValueError(f"Invalid wallet type: {self.current_wallet_type}")
-            self.log_test("Invalid Wallet Type Handling", True, "Error properly caught")
+            self.log_test("Invalid Wallet Type Handling", True, "Only NEAR wallet type accepted")
             tests_passed += 1
         except Exception as e:
             self.log_test("Invalid Wallet Type Handling", False, f"Error not handled: {str(e)}")
@@ -310,13 +337,12 @@ class RedSigmaE2ETester:
         try:
             deployment_payload = {}
             required_fields = ["contract_name", "source", "deployer"]
-            for field in required_fields:
-                if field not in deployment_payload:
-                    raise ValueError(f"Missing required field: {field}")
-            self.log_test("Missing Fields Handling", True, "Error properly caught")
-            tests_passed += 1
-        except Exception as e:
-            self.log_test("Missing Fields Handling", False, f"Error not handled: {str(e)}")
+            missing = [f for f in required_fields if f not in deployment_payload]
+            if missing:
+                raise ValueError(f"Missing required fields: {missing}")
+            self.log_test("Missing Fields Handling", False, "Should have detected missing fields")
+        except ValueError as e:
+            self.log_test("Missing Fields Handling", True, f"Missing fields properly detected: {e}")
         
         try:
             if self.mock_near.networkId != "testnet":
@@ -402,18 +428,19 @@ class RedSigmaE2ETester:
                 'contract_execution_time': '100ms'
             },
             'coverage': {
-                'wallet_types': ['NEAR Wallet', 'WalletConnect'],
+                'wallet_types': ['NEAR Wallet (near-api-js)'],
                 'network_support': ['NEAR Testnet'],
                 'contract_operations': ['Deploy', 'Execute', 'View'],
-                'error_scenarios': ['Invalid Input', 'Network Issues', 'Session Management']
+                'error_scenarios': ['Invalid Input', 'Network Issues', 'Session Management'],
+                'not_supported': ['WalletConnect (bridge dead + web3-provider is Ethereum, not NEAR)']
             },
             'recommendations': [
-                '✅ All core functionality tested successfully',
-                '✅ WalletConnect integration working properly',
-                '✅ Testnet wallet connections validated',
-                '✅ Error handling and edge cases covered',
-                '✅ User interface validation passed',
-                '🔧 Ready for production deployment'
+                '✅ NEAR Wallet (near-api-js) connection path is the only supported testnet method',
+                '✅ Dead helperUrl removed (was HTTP 404, broke near-api-js connect)',
+                '✅ Broken WalletConnect path removed (bridge unreachable + web3-provider is Ethereum not NEAR)',
+                '✅ walletOption ReferenceError bug fixed',
+                '🔧 WalletConnect not supported — bridge.walletconnect.org is dead; re-add only via a verified NEAR-compatible provider',
+                '⚠️ Production readiness requires real browser end-to-end verification (this suite uses mocks)'
             ]
         }
         
@@ -430,12 +457,12 @@ class RedSigmaE2ETester:
         print(f"Passed Tests: {summary['passed_tests']}")
         print(f"Success Rate: {summary['success_rate']}")
         
-        print(f"\n✅ All core functionality tested successfully")
-        print(f"✅ WalletConnect integration working properly")
-        print(f"✅ Testnet wallet connections validated")
+        print(f"\n✅ NEAR Wallet connection path verified")
+        print(f"✅ Dead helperUrl removed")
+        print(f"✅ Broken WalletConnect path removed")
         print(f"✅ Error handling and edge cases covered")
         print(f"✅ User interface validation passed")
-        
+
         perf = report['performance']
         print(f"\n🚀 Test Performance:")
         print(f"  Average Response Time: {perf['average_response_time']}")
@@ -446,6 +473,8 @@ class RedSigmaE2ETester:
         cov = report['coverage']
         print(f"\n🔧 Test Coverage:")
         print(f"  Wallet Types: {', '.join(cov['wallet_types'])}")
+        if cov.get('not_supported'):
+            print(f"  Not Supported: {', '.join(cov['not_supported'])}")
         print(f"  Network Support: {', '.join(cov['network_support'])}")
         print(f"  Contract Operations: {', '.join(cov['contract_operations'])}")
         print(f"  Error Scenarios: {', '.join(cov['error_scenarios'])}")

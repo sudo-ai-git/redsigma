@@ -118,15 +118,10 @@
     <div class="card">
       <h2>1. Connect to NEAR Testnet</h2>
       <div class="wallet-options">
-        <div class="wallet-option" onclick="selectWallet('near')" id="near-option">
+        <div class="wallet-option selected" onclick="selectWallet('near')" id="near-option">
           <div class="wallet-icon">🧭</div>
           <div><strong>NEAR Wallet</strong></div>
           <div class="small">Native NEAR testnet wallet</div>
-        </div>
-        <div class="wallet-option" onclick="selectWallet('walletconnect')" id="walletconnect-option">
-          <div class="wallet-icon">🔗</div>
-          <div><strong>WalletConnect</strong></div>
-          <div class="small">Connect your mobile wallet via WalletConnect</div>
         </div>
       </div>
       <div id="selected-wallet-info" class="connection-info" style="display:none;">
@@ -246,9 +241,8 @@
     </div>
   </div>
 
-  <!-- WalletConnect library -->
-  <script src="https://cdn.jsdelivr.net/npm/@walletconnect/web3-provider@1.8.0/dist/umd/index.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/web3@1.10.0/dist/web3.min.js"></script>
+  <!-- NEAR API JS (required for NEAR testnet wallet connection) -->
+  <script src="https://cdn.jsdelivr.net/npm/near-api-js@4.0.0/dist/near-api-js.min.js"></script>
 
   <script>
     const nearApi = window.nearApi || window;
@@ -258,9 +252,6 @@
     let near = null;
     let account = null;
     let contractId = 'redsigma.s03-gate.testnet';
-    let selectedWallet = 'near'; // 'near' or 'walletconnect'
-    let walletConnectProvider = null;
-    let web3 = null;
 
     const connectBtn = document.getElementById('connectBtn');
     const disconnectBtn = document.getElementById('disconnectBtn');
@@ -270,7 +261,6 @@
     const viewBtn = document.getElementById('viewBtn');
     const stateBtn = document.getElementById('stateBtn');
     const nearOption = document.getElementById('near-option');
-    const walletconnectOption = document.getElementById('walletconnect-option');
     const selectedWalletInfo = document.getElementById('selected-wallet-info');
     const walletNetwork = document.getElementById('wallet-network');
     const walletChainId = document.getElementById('wallet-chain-id');
@@ -283,22 +273,12 @@
 
     function hideStatus(el) { el.style.display = 'none'; }
 
-    function selectWallet(walletType) {
-      selectedWallet = walletType;
-
-      // Update UI selection
-      if (walletType === 'near') {
-        nearOption.classList.add('selected');
-        walletconnectOption.classList.remove('selected');
-        walletNetwork.textContent = 'NEAR Testnet';
-        walletChainId.textContent = '0x1';
-      } else {
-        walletOption.classList.remove('selected');
-        walletconnectOption.classList.add('selected');
-        walletNetwork.textContent = 'NEAR Testnet';
-        walletChainId.textContent = '0x1';
-      }
-
+    function selectWallet() {
+      // Only NEAR Wallet is supported (the WalletConnect bridge is dead and the
+      // Ethereum provider is not NEAR).
+      nearOption.classList.add('selected');
+      walletNetwork.textContent = 'NEAR Testnet';
+      walletChainId.textContent = '0x1';
       selectedWalletInfo.style.display = 'block';
       hideStatus(connectionStatus);
     }
@@ -310,35 +290,9 @@
         keyStore,
         nodeUrl: 'https://rpc.testnet.near.org',
         walletUrl: 'https://wallet.testnet.near.org',
-        helperUrl: 'https://helper.testnet.near.org',
         explorerUrl: 'https://explorer.testnet.near.org',
       });
       wallet = new WalletConnection(near, 'redsigma-demo');
-    }
-
-    async function initWalletConnect() {
-      // Initialize WalletConnect provider
-      walletConnectProvider = new window.WalletConnectProvider({
-        infuraId: null, // No Infura needed for NEAR
-        rpc: {
-          0: 'https://rpc.testnet.near.org', // NEAR Testnet RPC
-        },
-        bridge: 'https://bridge.walletconnect.org',
-        qrcodeModalOptions: {
-          mobileLinks: ['metamask', 'trust', 'coinbase', 'frame'],
-          desktopLinks: ['metamask', 'trust', 'coinbase', 'frame', 'ledger'],
-        },
-      });
-
-      // Enable WalletConnect provider
-      await walletConnectProvider.enable();
-
-      // Initialize Web3 with WalletConnect provider
-      web3 = new window.Web3(walletConnectProvider.provider);
-
-      // Set the provider on window for global access
-      window.web3 = web3;
-      window.provider = walletConnectProvider;
     }
 
     async function enableWallet(accountId) {
@@ -352,91 +306,35 @@
     }
 
     async function autoConnect() {
-      if (selectedWallet === 'near') {
-        if (!wallet) await initNearWallet();
-        if (wallet && wallet.isSignedIn()) {
-          account = wallet.account();
-          const aid = wallet.getAccountId();
-          await enableWallet(aid);
-        }
-      } else {
-        // Auto-connect for WalletConnect
-        if (walletConnectProvider && walletConnectProvider.connected) {
-          const accounts = await web3.eth.getAccounts();
-          if (accounts && accounts.length > 0) {
-            await enableWallet(accounts[0]);
-          }
-        }
+      if (!wallet) await initNearWallet();
+      if (wallet && wallet.isSignedIn()) {
+        account = wallet.account();
+        const aid = wallet.getAccountId();
+        await enableWallet(aid);
       }
     }
 
     async function connectWallet() {
       try {
-        if (selectedWallet === 'near') {
-          if (!wallet) await initNearWallet();
-          contractId = document.getElementById('contractId').value;
+        if (!wallet) await initNearWallet();
+        contractId = document.getElementById('contractId').value;
 
-          if (!wallet.isSignedIn()) {
-            // Redirect to NEAR wallet for sign-in
-            setStatus(connectionStatus, 'Redirecting to NEAR wallet for authorization...', 'info');
-            await new Promise(r => setTimeout(r, 500)); // let the status render
-            wallet.requestSignIn({
-              contractId: contractId,
-              methodNames: ['deploy_contract', 'execute', 'view', 'get_contract_count', 'get_owner'],
-              successUrl: 'https://sudo-ai-git.github.io/redsigma/',
-              failureUrl: 'https://sudo-ai-git.github.io/redsigma/',
-            });
-            return; // Page will redirect and reload
-          }
-
-          account = wallet.account();
-          const accountId = wallet.getAccountId();
-          await enableWallet(accountId);
-        } else {
-          // WalletConnect connection
-          setStatus(connectionStatus, 'Initializing WalletConnect...', 'info');
-          await initWalletConnect();
-
-          // Check if already connected
-          if (walletConnectProvider && walletConnectProvider.connected) {
-            const accounts = await web3.eth.getAccounts();
-            if (accounts && accounts.length > 0) {
-              await enableWallet(accounts[0]);
-              return;
-            }
-          }
-
-          // Trigger WalletConnect modal
-          await walletConnectProvider.createSession();
-
-          // Wait for connection
-          walletConnectProvider.on('connect', async (error, payload) => {
-            if (error) {
-              setStatus(connectionStatus, 'WalletConnect connection failed: ' + error, 'err');
-              return;
-            }
-
-            const accounts = await web3.eth.getAccounts();
-            if (accounts && accounts.length > 0) {
-              await enableWallet(accounts[0]);
-              setStatus(connectionStatus, 'WalletConnect connected successfully!', 'ok');
-            }
+        if (!wallet.isSignedIn()) {
+          // Redirect to NEAR wallet for sign-in
+          setStatus(connectionStatus, 'Redirecting to NEAR wallet for authorization...', 'info');
+          await new Promise(r => setTimeout(r, 500)); // let the status render
+          wallet.requestSignIn({
+            contractId: contractId,
+            methodNames: ['deploy_contract', 'execute', 'view', 'get_contract_count', 'get_owner'],
+            successUrl: 'https://sudo-ai-git.github.io/redsigma/',
+            failureUrl: 'https://sudo-ai-git.github.io/redsigma/',
           });
-
-          walletConnectProvider.on('session_update', async (error, payload) => {
-            if (error) {
-              return;
-            }
-            const accounts = await web3.eth.getAccounts();
-            if (accounts && accounts.length > 0 && !account) {
-              await enableWallet(accounts[0]);
-            }
-          });
-
-          walletConnectProvider.on('disconnect', () => {
-            disconnectWallet();
-          });
+          return; // Page will redirect and reload
         }
+
+        account = wallet.account();
+        const accountId = wallet.getAccountId();
+        await enableWallet(accountId);
       } catch (err) {
         console.error(err);
         setStatus(connectionStatus, 'Connection failed: ' + err.message, 'err');
@@ -444,16 +342,9 @@
     }
 
     async function disconnectWallet() {
-      if (selectedWallet === 'near' && wallet) {
+      if (wallet) {
         wallet.signOut();
         wallet = null; near = null; account = null;
-      } else if (walletConnectProvider) {
-        // Disconnect WalletConnect
-        if (walletConnectProvider.disconnect) {
-          await walletConnectProvider.disconnect();
-        }
-        walletConnectProvider = null;
-        web3 = null;
       }
 
       connectBtn.style.display = 'inline-block';

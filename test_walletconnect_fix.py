@@ -1,168 +1,77 @@
 #!/usr/bin/env python3
 """
-Test script to verify the frontend walletconnect fixes are working.
-This script checks if the frontend can be loaded and has the required walletconnect functionality.
+Test script to verify the REDΣSIGMA GitHub Pages demo wallet connection is fixed.
+
+Checks that:
+- near-api-js is loaded (NEAR testnet wallet connection requires it)
+- the dead helperUrl (HTTP 404) is removed from connect()
+- the broken WalletConnect path is removed (bridge dead + web3-provider is Ethereum not NEAR)
+- the undefined walletOption ReferenceError bug is gone
+- docs/ and frontend/ are identical (GitHub Pages serves docs/)
 """
 
 import re
 import sys
-import json
 
-def test_frontend_files():
-    """Test that frontend files have walletconnect functionality."""
-    
-    # Test frontend/index.html
-    frontend_path = "/home/sudosudo/.openclaw/workspace/redsigma/frontend/index.html"
-    
+
+def check(path, label):
     try:
-        with open(frontend_path, 'r') as f:
-            frontend_content = f.read()
+        with open(path) as f:
+            content = f.read()
     except FileNotFoundError:
-        print(f"❌ Frontend file not found: {frontend_path}")
-        return False
-    
-    # Check for walletconnect library imports
-    walletconnect_lib_patterns = [
-        r'@walletconnect/web3-provider',
-        r'walletconnect/web3-provider',
-        r'@walletconnect/web3-provider@1.8.0',
-        r'web3@1.10.0'
-    ]
-    
-    has_walletconnect_lib = any(re.search(pattern, frontend_content, re.IGNORECASE) for pattern in walletconnect_lib_patterns)
-    
-    # Check for wallet options UI
-    wallet_options_pattern = r'wallet-option.*walletconnect'
-    has_wallet_options = bool(re.search(wallet_options_pattern, frontend_content, re.IGNORECASE))
-    
-    # Check for WalletConnect initialization
-    walletconnect_init_patterns = [
-        r'new WalletConnectProvider',
-        r'WalletConnectProvider',
-        r'initWalletConnect',
-        r'walletconnect.*createSession'
-    ]
-    
-    has_walletconnect_init = any(re.search(pattern, frontend_content, re.IGNORECASE) for pattern in walletconnect_init_patterns)
-    
-    # Check for NEAR wallet fallback
-    near_wallet_patterns = [
-        r'new WalletConnection',
-        r'WalletConnection.*redsigma-demo',
-        r'requestSignIn'
-    ]
-    
-    has_near_wallet = any(re.search(pattern, frontend_content, re.IGNORECASE) for pattern in near_wallet_patterns)
-    
-    # Check for wallet selection logic
-    wallet_selection_patterns = [
-        r'selectWallet.*near',
-        r'selectWallet.*walletconnect',
-        r'selectedWallet.*near.*walletconnect'
-    ]
-    
-    has_wallet_selection = any(re.search(pattern, frontend_content, re.IGNORECASE) for pattern in wallet_selection_patterns)
-    
-    print("=== Frontend WalletConnect Test Results ===")
-    print(f"✅ Has WalletConnect library imports: {has_walletconnect_lib}")
-    print(f"✅ Has wallet options UI: {has_wallet_options}")
-    print(f"✅ Has WalletConnect initialization: {has_walletconnect_init}")
-    print(f"✅ Has NEAR wallet fallback: {has_near_wallet}")
-    print(f"✅ Has wallet selection logic: {has_wallet_selection}")
-    
-    if all([has_walletconnect_lib, has_wallet_options, has_walletconnect_init, has_near_wallet, has_wallet_selection]):
-        print("✅ All frontend walletconnect tests passed!")
-        return True
-    else:
-        print("❌ Some frontend walletconnect tests failed!")
+        print(f"❌ {label}: file not found: {path}")
         return False
 
-def test_docs_files():
-    """Test that docs/index.html has walletconnect functionality."""
-    
-    docs_path = "/home/sudosudo/.openclaw/workspace/redsigma/docs/index.html"
-    
-    try:
-        with open(docs_path, 'r') as f:
-            docs_content = f.read()
-    except FileNotFoundError:
-        print(f"❌ Docs file not found: {docs_path}")
-        return False
-    
-    # Check for walletconnect library imports
-    walletconnect_lib_patterns = [
-        r'@walletconnect/web3-provider',
-        r'walletconnect/web3-provider',
-        r'@walletconnect/web3-provider@1.8.0',
-        r'web3@1.10.0'
-    ]
-    
-    has_walletconnect_lib = any(re.search(pattern, docs_content, re.IGNORECASE) for pattern in walletconnect_lib_patterns)
-    
-    # Check for wallet options UI
-    wallet_options_pattern = r'wallet-option.*walletconnect'
-    has_wallet_options = bool(re.search(wallet_options_pattern, docs_content, re.IGNORECASE))
-    
-    # Check for WalletConnect initialization
-    walletconnect_init_patterns = [
-        r'new WalletConnectProvider',
-        r'WalletConnectProvider',
-        r'initWalletConnect',
-        r'walletconnect.*createSession'
-    ]
-    
-    has_walletconnect_init = any(re.search(pattern, docs_content, re.IGNORECASE) for pattern in walletconnect_init_patterns)
-    
-    # Check for NEAR wallet fallback
-    near_wallet_patterns = [
-        r'new WalletConnection',
-        r'WalletConnection.*redsigma-demo',
-        r'requestSignIn'
-    ]
-    
-    has_near_wallet = any(re.search(pattern, docs_content, re.IGNORECASE) for pattern in near_wallet_patterns)
-    
-    # Check for wallet selection logic
-    wallet_selection_patterns = [
-        r'selectWallet.*near',
-        r'selectWallet.*walletconnect',
-        r'selectedWallet.*near.*walletconnect'
-    ]
-    
-    has_wallet_selection = any(re.search(pattern, docs_content, re.IGNORECASE) for pattern in wallet_selection_patterns)
-    
-    print("\n=== Docs WalletConnect Test Results ===")
-    print(f"✅ Has WalletConnect library imports: {has_walletconnect_lib}")
-    print(f"✅ Has wallet options UI: {has_wallet_options}")
-    print(f"✅ Has WalletConnect initialization: {has_walletconnect_init}")
-    print(f"✅ Has NEAR wallet fallback: {has_near_wallet}")
-    print(f"✅ Has wallet selection logic: {has_wallet_selection}")
-    
-    if all([has_walletconnect_lib, has_wallet_options, has_walletconnect_init, has_near_wallet, has_wallet_selection]):
-        print("✅ All docs walletconnect tests passed!")
-        return True
-    else:
-        print("❌ Some docs walletconnect tests failed!")
-        return False
+    results = {}
+
+    # near-api-js must be loaded
+    results["near-api-js loaded"] = bool(re.search(r'near-api-js@4\.0\.0', content))
+
+    # dead helperUrl must be absent
+    results["helperUrl removed"] = not bool(re.search(r'helperUrl', content))
+
+    # broken WalletConnect libs must be absent
+    results["no web3-provider"] = not bool(re.search(r'@walletconnect/web3-provider', content))
+    results["no web3.js"] = not bool(re.search(r'web3@1\.10\.0', content))
+    results["no WalletConnectProvider"] = not bool(re.search(r'WalletConnectProvider', content))
+    results["no initWalletConnect"] = not bool(re.search(r'initWalletConnect', content))
+    results["no web3 variable"] = not bool(re.search(r'\bweb3\b', content))
+
+    # the undefined walletOption bug must be absent
+    results["no walletOption bug"] = not bool(re.search(r'\bwalletOption\b', content))
+
+    # NEAR wallet path must be present
+    results["WalletConnection present"] = bool(re.search(r'new WalletConnection', content))
+    results["requestSignIn present"] = bool(re.search(r'requestSignIn', content))
+    results["connect present"] = bool(re.search(r'\bconnect\(', content))
+
+    print(f"=== {label} ===")
+    all_ok = True
+    for name, ok in results.items():
+        print(f"  {'✅' if ok else '❌'} {name}: {ok}")
+        all_ok = all_ok and ok
+    return all_ok
+
 
 def main():
-    """Main test function."""
-    print("Testing WalletConnect fix for REDΣSIGMA GitHub Pages demo...\n")
-    
-    frontend_ok = test_frontend_files()
-    docs_ok = test_docs_files()
-    
-    print(f"\n=== Final Results ===")
-    print(f"Frontend tests: {'✅ PASSED' if frontend_ok else '❌ FAILED'}")
-    print(f"Docs tests: {'✅ PASSED' if docs_ok else '❌ FAILED'}")
-    
-    if frontend_ok and docs_ok:
-        print("\n🎉 All walletconnect fix tests passed!")
-        print("The walletconnect issue on the REDΣSIGMA GitHub Pages demo has been successfully resolved.")
-        return 0
-    else:
-        print("\n❌ Some tests failed. Please review the implementation.")
-        return 1
+    frontend = "/home/sudosudo/.openclaw/workspace/redsigma/frontend/index.html"
+    docs = "/home/sudosudo/.openclaw/workspace/redsigma/docs/index.html"
+
+    f_ok = check(frontend, "frontend/index.html")
+    d_ok = check(docs, "docs/index.html")
+
+    # frontend and docs must be identical (GitHub Pages serves docs/)
+    with open(frontend) as f:
+        fe = f.read()
+    with open(docs) as f:
+        de = f.read()
+    identical = fe == de
+    print(f"\n{'✅' if identical else '❌'} frontend and docs identical: {identical}")
+
+    ok = f_ok and d_ok and identical
+    print(f"\n=== Final: {'✅ PASSED' if ok else '❌ FAILED'} ===")
+    return 0 if ok else 1
+
 
 if __name__ == "__main__":
     sys.exit(main())
