@@ -206,31 +206,66 @@ pub enum UnOp {
     RefMut,
 }
 
+/// Maximum nesting depth for expressions and statements. Without this a
+/// recursive-descent parser aborts the process with a stack overflow on
+/// hostile input (`((((...))))`), which no caller can catch.
+///
+/// Each nesting level costs two depth units (`parse_expr` + `parse_unary`), so
+/// this allows roughly 50 nested parentheses. The limit is deliberately
+/// conservative: the parser must not overflow on a default-sized thread stack
+/// (~2 MiB), not just the 8 MiB main thread.
+const MAX_DEPTH: usize = 100;
+
 pub struct Parser {
-    input: String,
+    /// Source as a char vector: indexing a `String` by `chars().nth(pos)` is
+    /// O(pos), which made the whole parser O(n²) on large files.
+    input: Vec<char>,
     pos: usize,
+    depth: usize,
+    /// Set when a `/*` comment is never closed. `skip_whitespace` cannot return
+    /// an error, so the top-level entry point checks this flag.
+    unterminated_comment: bool,
 }
 
 impl Parser {
     fn new(input: &str) -> Self {
         Parser {
-            input: input.to_string(),
+            input: input.chars().collect(),
             pos: 0,
+            depth: 0,
+            unterminated_comment: false,
         }
     }
 
     fn current(&self) -> Option<char> {
-        self.input.chars().nth(self.pos)
+        self.input.get(self.pos).copied()
     }
 
     fn peek(&self, offset: usize) -> Option<char> {
-        self.input.chars().nth(self.pos + offset)
+        self.input.get(self.pos + offset).copied()
     }
 
     fn advance(&mut self) {
         if self.pos < self.input.len() {
             self.pos += 1;
         }
+    }
+
+    /// Enter a nested expression/statement. Returns an error past `MAX_DEPTH`
+    /// instead of recursing until the stack is exhausted.
+    fn enter(&mut self) -> Result<(), String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(format!(
+                "Expression too deeply nested (max depth {})",
+                MAX_DEPTH
+            ));
+        }
+        Ok(())
+    }
+
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     fn skip_whitespace(&mut self) {
@@ -257,16 +292,24 @@ impl Parser {
             if self.current() == Some('/') && self.peek(1) == Some('*') {
                 self.advance();
                 self.advance();
+                let mut closed = false;
                 loop {
                     match self.current() {
                         None => break,
                         Some('*') if self.peek(1) == Some('/') => {
                             self.advance();
                             self.advance();
+                            closed = true;
                             break;
                         }
                         _ => self.advance(),
                     }
+                }
+                if !closed {
+                    // An unterminated comment swallows the rest of the file and
+                    // would otherwise be accepted silently.
+                    self.unterminated_comment = true;
+                    return;
                 }
                 continue;
             }
@@ -336,13 +379,18 @@ impl Parser {
             self.advance();
             num.push('x');
             self.advance();
+            let mut digits = 0;
             while let Some(c) = self.current() {
                 if c.is_ascii_hexdigit() {
                     num.push(c);
+                    digits += 1;
                     self.advance();
                 } else {
                     break;
                 }
+            }
+            if digits == 0 {
+                return Err("Invalid hex literal: no digits after 0x".to_string());
             }
         } else {
             while let Some(c) = self.current() {
@@ -351,6 +399,17 @@ impl Parser {
                     self.advance();
                 } else {
                     break;
+                }
+            }
+            // `1_000` used to parse as the number `1` followed by the
+            // identifier `_000`, silently becoming two statements. A digit run
+            // directly followed by an identifier character is one bad literal.
+            if let Some(c) = self.current() {
+                if c == '_' || c.is_ascii_alphanumeric() {
+                    return Err(format!(
+                        "Invalid number literal: '{}' followed by '{}'",
+                        num, c
+                    ));
                 }
             }
         }
@@ -366,10 +425,12 @@ impl Parser {
         self.skip_whitespace();
         self.consume('"')?;
         let mut s = String::new();
+        let mut closed = false;
 
         while let Some(c) = self.current() {
             if c == '"' {
                 self.advance();
+                closed = true;
                 break;
             } else if c == '\\' {
                 self.advance();
@@ -390,7 +451,10 @@ impl Parser {
             }
         }
 
-        if self.current() != Some('"') {
+        // The closing quote is consumed above, so the terminator must be
+        // tracked with a flag: checking `current() == '"'` after the loop
+        // compares the character AFTER the quote and rejected every string.
+        if !closed {
             return Err("Unterminated string".to_string());
         }
 
@@ -428,7 +492,10 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
-        self.parse_binary(0)
+        self.enter()?;
+        let result = self.parse_binary(0);
+        self.leave();
+        result
     }
 
     fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, String> {
@@ -461,15 +528,15 @@ impl Parser {
 
     fn get_binop_precedence(&self) -> u8 {
         let mut pos = self.pos;
-        while let Some(c) = self.input.chars().nth(pos) {
+        while let Some(c) = self.input.get(pos).copied() {
             if c.is_whitespace() {
                 pos += 1;
             } else {
                 break;
             }
         }
-        let c1 = self.input.chars().nth(pos);
-        let c2 = self.input.chars().nth(pos + 1);
+        let c1 = self.input.get(pos).copied();
+        let c2 = self.input.get(pos + 1).copied();
 
         match (c1, c2) {
             (Some('|'), Some('|')) => 1,
@@ -596,7 +663,10 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Result<Expr, String> {
         self.skip_whitespace();
-        match self.current() {
+        // A long chain of `-`/`!` recurses here without going through
+        // `parse_expr`, so it needs its own depth guard.
+        self.enter()?;
+        let result = match self.current() {
             Some('!') => {
                 self.advance();
                 let expr = self.parse_unary()?;
@@ -630,7 +700,9 @@ impl Parser {
                 })
             }
             _ => self.parse_primary(),
-        }
+        };
+        self.leave();
+        result
     }
 
     fn parse_if_expr(&mut self) -> Result<Expr, String> {
@@ -860,6 +932,15 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
+        // `if` / `while` / `for` / block statements recurse through here
+        // without going through `parse_expr`, so they need the same guard.
+        self.enter()?;
+        let result = self.parse_stmt_inner();
+        self.leave();
+        result
+    }
+
+    fn parse_stmt_inner(&mut self) -> Result<Stmt, String> {
         self.skip_whitespace();
 
         if self.check_keyword("let") {
@@ -1284,7 +1365,11 @@ impl Parser {
 
     pub fn parse(input: &str) -> Result<Vec<Contract>, String> {
         let mut parser = Parser::new(input);
-        parser.parse_program()
+        let contracts = parser.parse_program()?;
+        if parser.unterminated_comment {
+            return Err("Unterminated block comment".to_string());
+        }
+        Ok(contracts)
     }
 }
 
@@ -1706,6 +1791,105 @@ mod tests {
             Stmt::Expr(Expr::Binary { op: BinOp::Div, .. }) => {}
             other => panic!("expected Div, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_string_literal_roundtrips() {
+        // Regression: the closing quote is consumed inside the loop, so the
+        // old `current() == '"'` check compared the character AFTER the quote
+        // and rejected every well-formed string literal.
+        let input = r#"contract Test { state { x: u64 } fn foo() -> u64 { "http://x"; } }"#;
+        let contracts = Parser::parse(input).unwrap();
+        match &contracts[0].functions[0].body[0] {
+            Stmt::Expr(Expr::String(s)) => assert_eq!(s, "http://x"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_string_escape_sequences() {
+        let input = r#"contract Test { state { x: u64 } fn foo() -> u64 { "a\nb\t\"c"; } }"#;
+        let contracts = Parser::parse(input).unwrap();
+        match &contracts[0].functions[0].body[0] {
+            Stmt::Expr(Expr::String(s)) => assert_eq!(s, "a\nb\t\"c"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unterminated_string_is_error() {
+        let input = r#"contract Test { state { x: u64 } fn foo() -> u64 { "abc; } }"#;
+        let err = Parser::parse(input).unwrap_err();
+        assert_eq!(err, "Unterminated string");
+    }
+
+    #[test]
+    fn test_unterminated_block_comment_is_error() {
+        // Regression: an unterminated `/*` swallowed the rest of the file and
+        // was accepted silently.
+        let input = "contract Test { state { x: u64 } } /*";
+        let err = Parser::parse(input).unwrap_err();
+        assert_eq!(err, "Unterminated block comment");
+    }
+
+    #[test]
+    fn test_underscore_literal_is_error() {
+        // Regression: `1_000` parsed as the number `1` followed by the
+        // identifier `_000`, silently becoming two statements.
+        let input = "contract Test { state { x: u64 } fn foo() -> u64 { 1_000; } }";
+        let err = Parser::parse(input).unwrap_err();
+        assert!(err.contains("Invalid number literal"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_invalid_hex_literal_is_error() {
+        let input = "contract Test { state { x: u64 } fn foo() -> u64 { 0x; } }";
+        let err = Parser::parse(input).unwrap_err();
+        assert!(err.contains("Invalid hex literal"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_hex_literal_parses() {
+        let input = "contract Test { state { x: u64 } fn foo() -> u64 { 0xFF; } }";
+        let contracts = Parser::parse(input).unwrap();
+        match &contracts[0].functions[0].body[0] {
+            Stmt::Expr(Expr::Number(n)) => assert_eq!(n, "0xFF"),
+            other => panic!("expected Number, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deep_nesting_is_clean_error() {
+        // Regression: 2000 nested parens overflowed the stack (SIGABRT).
+        let input = format!(
+            "contract Test {{ state {{ x: u64 }} fn foo() -> u64 {{ {}1{}; }} }}",
+            "(".repeat(2000),
+            ")".repeat(2000)
+        );
+        let err = Parser::parse(&input).unwrap_err();
+        assert!(err.contains("too deeply nested"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_deep_unary_is_clean_error() {
+        let input = format!(
+            "contract Test {{ state {{ x: u64 }} fn foo() -> u64 {{ {}1; }} }}",
+            "-".repeat(5000)
+        );
+        let err = Parser::parse(&input).unwrap_err();
+        assert!(err.contains("too deeply nested"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_nesting_at_limit_is_accepted() {
+        // A depth just under the guard must still parse (40 nested parens
+        // costs ~82 depth units; the guard is 100).
+        let input = format!(
+            "contract Test {{ state {{ x: u64 }} fn foo() -> u64 {{ {}1{}; }} }}",
+            "(".repeat(40),
+            ")".repeat(40)
+        );
+        assert!(Parser::parse(&input).is_ok());
     }
 
     #[test]

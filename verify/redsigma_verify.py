@@ -42,6 +42,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import z3
 
+# Deep ASTs recurse once per level in eval_expr; give the interpreter headroom
+# over the parser's MAX_DEPTH (100) and convert overruns into a Decline rather
+# than a RecursionError traceback.
+sys.setrecursionlimit(max(sys.getrecursionlimit(), 10_000))
+
 
 _INTEGER_WIDTHS = {
     "u8": 8,
@@ -98,6 +103,38 @@ def type_signed(ty_name: str) -> bool:
     return _bare(ty_name) in _SIGNED_TYPES
 
 
+def parse_int_literal(
+    body: str, width: int, signed: Optional[bool], magnitude: bool = False
+) -> int:
+    """Parse an AST numeric literal, validating it against the declared width.
+
+    The parser stores numbers as strings (decimal or ``0x`` hex). Plain
+    ``int(body)`` is too permissive on both sides: it accepts ``1_000`` and
+    values far outside the type, and ``z3.BitVecVal`` then silently truncates
+    the latter — so a literal the type cannot hold would be modelled as if it
+    could. Anything malformed or out of range is DECLINED instead.
+
+    ``magnitude=True`` allows the value ``2**(width-1)``, which is only
+    representable as the operand of a unary minus (``-2**63`` for ``i64``).
+    """
+    if not body or "_" in body:
+        raise Decline(f"malformed numeric literal {body!r}")
+    try:
+        value = int(body, 16) if body.lower().startswith("0x") else int(body, 10)
+    except ValueError:
+        raise Decline(f"malformed numeric literal {body!r}")
+
+    if signed:
+        lo = -(1 << (width - 1))
+        hi = (1 << (width - 1)) if magnitude else (1 << (width - 1)) - 1
+    else:
+        lo, hi = 0, (1 << width) - 1
+    if not lo <= value <= hi:
+        kind = "i" if signed else "u"
+        raise Decline(f"literal {body} is out of range for {kind}{width}")
+    return value
+
+
 # A binding is (z3 term, BitVec width or None, signed or None).
 Binding = Tuple[Any, Optional[int], Optional[bool]]
 
@@ -107,6 +144,26 @@ Binding = Tuple[Any, Optional[int], Optional[bool]]
 # --------------------------------------------------------------------------
 
 def eval_expr(
+    expr: Any,
+    env: Dict[str, Binding],
+    state: Dict[str, Binding],
+    declines: List[str],
+    expected_width: Optional[int] = None,
+    pre_env: Optional[Dict[str, Binding]] = None,
+    pre_state: Optional[Dict[str, Binding]] = None,
+    expected_signed: Optional[bool] = None,
+) -> Binding:
+    """Wrapper that turns a recursion overrun into a Decline, never a traceback."""
+    try:
+        return _eval_expr_inner(
+            expr, env, state, declines, expected_width, pre_env, pre_state,
+            expected_signed,
+        )
+    except RecursionError:
+        raise Decline("expression is too deeply nested to model")
+
+
+def _eval_expr_inner(
     expr: Any,
     env: Dict[str, Binding],
     state: Dict[str, Binding],
@@ -138,7 +195,8 @@ def eval_expr(
         if not isinstance(body, str):
             raise Decline(f"malformed number node {expr!r}")
         width = expected_width or 64
-        return z3.BitVecVal(int(body), width), width, bool(expected_signed)
+        value = parse_int_literal(body, width, expected_signed)
+        return z3.BitVecVal(value, width), width, bool(expected_signed)
 
     if tag == "Bool":
         return z3.BoolVal(bool(body)), None, None
@@ -162,6 +220,18 @@ def eval_expr(
 
     if tag == "Unary":
         op = body["op"]
+        # Fold `-<literal>` BEFORE evaluating the operand: `2**(width-1)` is
+        # rejected as a literal on its own but is exactly representable as
+        # `-2**(width-1)` in two's complement (e.g. -2**63 for i64).
+        if op == "Neg":
+            operand = body["expr"]
+            if isinstance(operand, dict) and "Number" in operand:
+                width = expected_width or 64
+                magnitude = parse_int_literal(
+                    operand["Number"], width, True, magnitude=True
+                )
+                return z3.BitVecVal(-magnitude, width), width, bool(expected_signed)
+            # otherwise fall through and evaluate the operand normally
         inner, width, signed = eval_expr(
             body["expr"], env, state, declines, expected_width, pre_env,
             pre_state, expected_signed,
@@ -228,6 +298,20 @@ def _eval_binary(
             f"mixed-signedness arithmetic: {'signed' if ls else 'unsigned'} vs "
             f"{'signed' if rs else 'unsigned'} operands are not silently coerced"
         )
+
+    # `&&` / `||` are truthiness operators: booleans AND integers are both
+    # accepted (non-zero = true). They must be handled before the boolean
+    # decline below, otherwise `b && c` on two booleans is refused while
+    # `1 && 2` is accepted — the exact opposite of useful.
+    if op == "And":
+        return z3.And(_truthy(left), _truthy(right)), None, None
+    if op == "Or":
+        return z3.Or(_truthy(left), _truthy(right)), None, None
+
+    if (lw is None) != (rw is None):
+        # A boolean operand meeting an integer one (e.g. `b + 1`). Adding a
+        # z3 Bool to a BitVec raises a sort mismatch, which is not a verdict.
+        raise Decline("mixed boolean and integer operands are not modelled")
     width = lw if lw is not None else rw
     signed = ls if ls is not None else rs
 
@@ -271,17 +355,15 @@ def _eval_binary(
     if op == "BitXor":
         return left ^ right, width, signed
     if op == "Shl":
-        return left << right, width, signed
+        # WASM interprets the shift count modulo the bit width; z3's bvshl
+        # yields 0 once the count reaches the width. Mask to match the machine.
+        mask = z3.BitVecVal(width - 1, width)
+        return left << (right & mask), width, signed
     if op == "Shr":
         # `>>` in z3py is the ARITHMETIC shift; the logical one is LShR.
-        return ((left >> right) if signed else z3.LShR(left, right)), width, signed
-    if op == "And":
-        return z3.And(_truthy(left), _truthy(right)), None, None
-    if op == "Or":
-        return z3.Or(_truthy(left), _truthy(right)), None, None
-    if op == "Range":
-        raise Decline("range is only valid as a for-loop iterator")
-
+        mask = z3.BitVecVal(width - 1, width)
+        count = right & mask
+        return ((left >> count) if signed else z3.LShR(left, count)), width, signed
     raise Decline(f"binary operator {op} is not modelled")
 
 
@@ -646,12 +728,19 @@ def _old(name: str) -> Dict[str, Any]:
     return {"Call": {"func": "old", "args": [_id(name)]}}
 
 
-def _contract(name: str, state: List[str], fn: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "contract": name,
-        "state": [{"name": s, "type": "u64"} for s in state],
-        "functions": [fn],
-    }
+def _neg(value: Any) -> Dict[str, Any]:
+    return {"Unary": {"op": "Neg", "expr": value}}
+
+
+def _contract(name: str, state: List[Any], fn: Dict[str, Any]) -> Dict[str, Any]:
+    # state entries are either a name (default u64) or a (name, type) pair.
+    fields = []
+    for item in state:
+        if isinstance(item, tuple):
+            fields.append({"name": item[0], "type": item[1]})
+        else:
+            fields.append({"name": item, "type": "u64"})
+    return {"contract": name, "state": fields, "functions": [fn]}
 
 
 def _fn(name: str, body: List[Any], pre: Any = None, post: Any = None,
@@ -745,6 +834,94 @@ _SELFTEST_CASES = [
             ),
         ),
         {"post": "Proven", "invariant": "Proven"},
+    ),
+    (
+        # Regression: `&&` was unreachable for booleans — an earlier
+        # `width is None` guard declined it, so `b && c` could never be proved.
+        "&& on booleans is modelled",
+        _contract(
+            "BoolAnd",
+            [("b", "bool"), ("c", "bool")],
+            _fn(
+                "f",
+                [_ret(None)],
+                pre=_bin("And", _id("b"), _id("c")),
+                post=_id("b"),
+            ),
+        ),
+        {"post": "Proven"},
+    ),
+    (
+        # Regression: z3's bvshl yields 0 once the count reaches the width;
+        # WASM interprets the count modulo the width, so x << 64 == x for u64.
+        "WASM shift count is modulo the width",
+        _contract(
+            "Shift",
+            ["x"],
+            _fn(
+                "f",
+                [_set("x", _bin("Shl", _id("x"), _num(64))), _ret(None)],
+                pre={"Bool": True},
+                post=_bin("Eq", _id("x"), _old("x")),
+            ),
+        ),
+        {"post": "Proven"},
+    ),
+    (
+        "hex literal 0xFF is 255",
+        _contract(
+            "Hex",
+            ["x"],
+            _fn(
+                "f",
+                [_set("x", _num("0xFF")), _ret(None)],
+                pre={"Bool": True},
+                post=_bin("Eq", _id("x"), _num(255)),
+            ),
+        ),
+        {"post": "Proven"},
+    ),
+    (
+        "literal beyond u64 is declined, not truncated",
+        _contract(
+            "TooBig",
+            ["x"],
+            _fn(
+                "f",
+                [_set("x", _num(18446744073709551616)), _ret(None)],
+                pre={"Bool": True},
+                post=_bin("Ge", _id("x"), _num(0)),
+            ),
+        ),
+        {"post": "Unverified"},
+    ),
+    (
+        "boolean arithmetic is declined (z3 sort mismatch)",
+        _contract(
+            "BoolArith",
+            [("b", "bool")],
+            _fn(
+                "f",
+                [_ret(None)],
+                pre={"Bool": True},
+                post=_bin("Gt", _bin("Add", _id("b"), _num(1)), _num(0)),
+            ),
+        ),
+        {"post": "Unverified"},
+    ),
+    (
+        "-2**63 is representable as an i64 literal",
+        _contract(
+            "I64Min",
+            [("x", "i64")],
+            _fn(
+                "f",
+                [_set("x", _neg(_num(9223372036854775808))), _ret(None)],
+                pre={"Bool": True},
+                post=_bin("Lt", _id("x"), _num(0)),
+            ),
+        ),
+        {"post": "Proven"},
     ),
 ]
 

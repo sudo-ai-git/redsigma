@@ -38,7 +38,7 @@ pip install z3-solver
 git clone https://github.com/sudo-ai-git/redsigma
 cd redsigma
 cargo build --release --workspace
-cargo test --workspace          # 106 tests
+cargo test --workspace          # 118 tests
 ```
 
 ### Verify your first contract
@@ -385,13 +385,20 @@ PASS  old() reads the PRE-state, not the post-state: {'post': 'Counterexample', 
 PASS  a body that adds 2 does not prove a +1 postcondition: {'post': 'Counterexample', 'invariant': 'Proven'}
 PASS  division is declined, never modelled: {'post': 'Unverified', 'invariant': 'Unverified'}
 PASS  u64 comparisons are unsigned (2^64-1 > 0): {'post': 'Proven', 'invariant': 'Proven'}
+PASS  && on booleans is modelled: {'post': 'Proven'}
+PASS  WASM shift count is modulo the width: {'post': 'Proven'}
+PASS  hex literal 0xFF is 255: {'post': 'Proven'}
+PASS  literal beyond u64 is declined, not truncated: {'post': 'Unverified'}
+PASS  boolean arithmetic is declined (z3 sort mismatch): {'post': 'Unverified'}
+PASS  -2**63 is representable as an i64 literal: {'post': 'Proven'}
 
-self-test: 5/5 cases as expected
+self-test: 11/11 cases as expected
 ```
 
 Each case names the verdict it expects, so the gate is falsifiable: reverting
-the `old()` pre-state fix, the unsigned-comparison fix, or body execution each
-makes a case fail.
+the `old()` pre-state fix, the unsigned-comparison fix, the shift masking, the
+`&&`/`||` placement, the literal range check, the boolean/integer check, the
+`-2**63` folding, or body execution each makes a case fail (mutation-checked).
 
 ---
 
@@ -403,12 +410,13 @@ makes a case fail.
 | `i8` `i16` `i32` `i64` | modelled (signed `BitVec`) |
 | `u128` `i128` | parsed, **declined** (no 128-bit model) |
 | `bool` | modelled |
-| `+ - *` `& \| ^ << >>` | modelled |
+| `+ - *` `& \| ^ << >>` | modelled (`<<` / `>>` use WASM's modulo-width shift count) |
 | `< <= > >= == !=` | modelled (signedness from the declared type) |
-| `&& \|\| !` | modelled |
+| `&& \|\| !` | modelled (booleans and integer truthiness) |
 | `/` `%` | **declined** |
 | calls, loops, `if`/`while`/`for`/`match`, strings, arrays, structs, indexing, field access | **declined** |
-| mixed-width or mixed-signedness arithmetic | **declined**, not silently extended |
+| mixed-width, mixed-signedness, or mixed boolean/integer arithmetic | **declined**, not silently extended |
+| numeric literals that do not fit the declared width | **declined**, not truncated |
 
 A declined construct is recorded and the remaining obligations are still
 checked — one unsupported statement does not abandon the function.
@@ -448,8 +456,13 @@ Every function must carry `@verified`; a function with no clauses is reported as
 ### Statements and expressions
 
 `let` / `let mut` / `const`, assignment `x = v`, `return`, `if` / `else`,
-`while`, `for x in a..b`, `match`, `break`, `continue`, blocks, and the
-operators listed above.
+`while`, `for x in a..b`, `match`, `break`, `continue`, blocks, string
+literals (`"…"` with `\n` / `\t` / `\r` / `\\` / `\"`), decimal and `0x` hex
+integer literals, and the operators listed above.
+
+Expressions and statements may nest up to 100 levels (about 50 nested
+parentheses); deeper input is rejected with a clean parse error rather than a
+stack overflow.
 
 ### Types
 
@@ -576,10 +589,14 @@ compiler pipeline.
 **Working and verified by execution:**
 
 - Parser for the subset described above; `@verified` clauses captured as AST.
-- z3 tri-state verifier with a falsifiable 5/5 self-test.
+- z3 tri-state verifier with a falsifiable 11/11 self-test.
+- Hostile-input probes: the parser returns a clean error (never SIGABRT) on
+  deep nesting, unterminated comments/strings and malformed literals; the
+  verifier returns `Unverified` (never a traceback) on malformed literals,
+  mixed boolean/integer arithmetic, and deeply nested ASTs.
 - Integrity layers: SemanticSpace, BijectiveVerifier, CausalMemory, DualStream,
   6-layer reflection, 231-gate checksums.
-- `cargo test --workspace`: 106 tests passing.
+- `cargo test --workspace`: 118 tests passing.
 - A NEAR test contract, deployed and exercised on testnet.
 
 **Not implemented yet:**

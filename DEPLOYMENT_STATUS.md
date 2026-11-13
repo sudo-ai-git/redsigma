@@ -2,7 +2,7 @@
 
 ## Summary
 
-- **Core implementation**: ✅ 106 tests passing, 0 failing (`cargo test --workspace`)
+- **Core implementation**: ✅ 118 tests passing, 0 failing (`cargo test --workspace`)
 - **Verification pipeline**: ✅ z3 tri-state verifier + falsifiable self-test (5/5)
 - **Testnet deployment**: ✅ **DEPLOYED AND VERIFIED** (was DNS-blocked; RPC is reachable again)
 
