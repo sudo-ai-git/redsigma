@@ -226,18 +226,41 @@
 
     function hideStatus(el) { el.style.display = 'none'; }
 
+    async function initWallet() {
+      const keyStore = new keyStores.BrowserLocalStorageKeyStore();
+      near = await connect({
+        networkId: 'testnet',
+        keyStore,
+        nodeUrl: 'https://rpc.testnet.near.org',
+        walletUrl: 'https://wallet.testnet.near.org',
+        helperUrl: 'https://helper.testnet.near.org',
+        explorerUrl: 'https://explorer.testnet.near.org',
+      });
+      wallet = new WalletConnection(near, 'redsigma-demo');
+    }
+
+    async function enableWallet(accountId) {
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = 'inline-block';
+      setStatus(connectionStatus, 'Connected as: ' + accountId, 'ok');
+      deployBtn.disabled = false;
+      execBtn.disabled = false;
+      viewBtn.disabled = false;
+      stateBtn.disabled = false;
+    }
+
+    async function autoConnect() {
+      if (!wallet) await initWallet();
+      if (wallet.isSignedIn()) {
+        account = wallet.account();
+        const aid = wallet.getAccountId();
+        await enableWallet(aid);
+      }
+    }
+
     async function connectWallet() {
       try {
-        const keyStore = new keyStores.BrowserLocalStorageKeyStore();
-        near = await connect({
-          networkId: 'testnet',
-          keyStore,
-          nodeUrl: 'https://rpc.testnet.near.org',
-          walletUrl: 'https://wallet.testnet.near.org',
-          helperUrl: 'https://helper.testnet.near.org',
-          explorerUrl: 'https://explorer.testnet.near.org',
-        });
-        wallet = new WalletConnection(near, 'redsigma-demo');
+        if (!wallet) await initWallet();
         contractId = document.getElementById('contractId').value;
 
         if (!wallet.isSignedIn()) {
@@ -255,16 +278,7 @@
 
         account = wallet.account();
         const accountId = wallet.getAccountId();
-
-        connectBtn.style.display = 'none';
-        disconnectBtn.style.display = 'inline-block';
-        setStatus(connectionStatus, 'Connected as: ' + accountId, 'ok');
-
-        // Enable buttons
-        deployBtn.disabled = false;
-        execBtn.disabled = false;
-        viewBtn.disabled = false;
-        stateBtn.disabled = false;
+        await enableWallet(accountId);
       } catch (err) {
         console.error(err);
         setStatus(connectionStatus, 'Connection failed: ' + err.message, 'err');
@@ -282,6 +296,9 @@
       viewBtn.disabled = true;
       stateBtn.disabled = true;
     }
+
+    // Auto-connect on page load (handles redirect back from NEAR wallet)
+    autoConnect();
 
     connectBtn.addEventListener('click', connectWallet);
     disconnectBtn.addEventListener('click', disconnectWallet);
