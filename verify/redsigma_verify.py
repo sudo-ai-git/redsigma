@@ -667,6 +667,18 @@ def verify_function(
 
     state_pre = dict(state)
     env_pre = dict(env)
+
+    # VACUOUS-PROOF GUARD (computed once; see the use site below).
+    #
+    # A `post` goal is discharged when `pre ∧ ¬post` is unsat. That unsat can
+    # mean "the post follows" OR "the premise is empty" -- and an empty premise
+    # proves nothing about executable behaviour. Compute the premise's
+    # satisfiability ONCE here rather than inside the goal loop: it does not
+    # depend on the goal.
+    #
+    # NOTE the inductive goals (`invariant`, `contract_invariant[i]`) use a
+    # DIFFERENT premise -- pre ∧ invariant -- so their premise is checked
+    # separately inside the loop, where that term is available.
     try:
         execute_body(fn["body"], env, state, report.declines)
     except Decline as d:
@@ -692,19 +704,53 @@ def verify_function(
             )
             continue
 
-        solver = z3.Solver()
-        solver.add(pre_term)
+        # VACUOUS-PROOF GUARD.
+        #
+        # `premise ∧ ¬goal` unsat is the proof condition, but unsat can arise
+        # from two very different reasons: the goal genuinely follows from the
+        # premise, or the premise itself is empty. `contract C { state { x: u64 }
+        # @verified(pre: x < 0, post: x == 12345) }` has an unsatisfiable
+        # precondition (a u64 is never negative), so pre ∧ ¬goal is trivially
+        # unsat and the naive check reports `Proven`. That is a vacuous proof:
+        # no executable call can satisfy the premise, so the obligation says
+        # nothing about the running contract and must not be reported as
+        # discharged. Soundness of the discharged claim requires a non-empty
+        # premise, so every goal is Unverified instead.
+        #
+        # Each kind of goal has its own premise:
+        #   post                  -> pre
+        #   invariant, contract_* -> pre ∧ invariant   (inductive protocol)
+        # so satisfiability is evaluated per goal, not once per function.
+        premise = pre_term
         if kind != "post":
             # Inductive invariant protocol: assume the invariant held in the
             # pre-state, then prove it still holds in the post-state.
             try:
                 inv_pre_raw, _, _ = eval_expr(expr, env_pre, state_pre, report.declines)
-                solver.add(as_bool(inv_pre_raw, report.declines))
+                premise = z3.And(pre_term, as_bool(inv_pre_raw, report.declines))
             except Decline as d:
                 report.obligations.append(
                     Obligation(fn["name"], kind, "Unverified", f"pre-state: {d.reason}")
                 )
                 continue
+        premise_solver = z3.Solver()
+        premise_solver.add(premise)
+        if premise_solver.check() != z3.sat:
+            report.obligations.append(
+                Obligation(
+                    fn["name"],
+                    kind,
+                    "Unverified",
+                    "the premise is unsatisfiable; a proof over an empty input "
+                    "range is vacuous, not a discharge",
+                )
+            )
+            continue
+
+        # Reuse the premise just checked: the goal loop's solver asserts the
+        # same premise the vacuity guard just proved satisfiable.
+        solver = z3.Solver()
+        solver.add(premise)
         solver.add(z3.Not(goal))
 
         result = solver.check()
@@ -1179,6 +1225,47 @@ _SELFTEST_CASES = [
             invariants=[_bin("Ge", _id("x"), _num(0))],
         ),
         {},
+    ),
+    (
+        # Regression: VACUOUS PROOF.
+        #
+        # `pre ∧ ¬post` unsat is the proof condition, but unsat also arises when
+        # the precondition is EMPTY. `pre: x < 0` cannot hold for a u64 state
+        # field, so pre ∧ ¬post is trivially unsat and the naive check reported
+        # the postcondition as Proven. No executable call satisfies that
+        # premise, so the obligation proved nothing about the running contract.
+        # A proof over an empty input range is not a discharge: report
+        # Unverified instead.
+        "an unsatisfiable precondition is not a proof",
+        _contract(
+            "Vacuous",
+            ["x"],
+            _fn(
+                "impossible",
+                [_ret(_id("x"))],
+                pre=_bin("Lt", _id("x"), _num(0)),
+                post=_bin("Eq", _id("x"), _num(12345)),
+            ),
+        ),
+        {"post": "Unverified"},
+    ),
+    (
+        # The same premise becomes non-vacuous once it can hold, and then the
+        # false postcondition is a genuine Counterexample rather than a vacuous
+        # pass. Without this pair, the case above could be "fixed" by declining
+        # every unsatisfiable-looking contract.
+        "a satisfiable precondition still catches a false postcondition",
+        _contract(
+            "NonVacuous",
+            ["x"],
+            _fn(
+                "bad",
+                [_ret(_id("x"))],
+                pre=_bin("Gt", _id("x"), _num(100)),
+                post=_bin("Lt", _id("x"), _num(100)),
+            ),
+        ),
+        {"post": "Counterexample"},
     ),
     (
         # Regression: a bare literal has no intrinsic width, so `0 <= x` was

@@ -454,18 +454,6 @@ impl<'a> Emitter<'a> {
                 self.indent -= 1;
                 self.line(")");
                 return Ok(());
-                for s in body {
-                    self.stmt(s)?;
-                }
-                self.line(&format!(
-                    "(local.set ${} (i64.add (local.get ${}) (i64.const 1)))",
-                    idx, idx
-                ));
-                self.line("(br 0)");
-                self.indent -= 1;
-                self.line(")");
-                self.indent -= 1;
-                self.line(")");
             }
             Stmt::Match { expr, arms } => {
                 self.expr(expr)?;

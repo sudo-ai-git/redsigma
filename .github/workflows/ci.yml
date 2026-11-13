@@ -32,8 +32,14 @@ jobs:
       - name: parser hostile inputs
         run: cargo test -p redsigma-parser --test hostile_inputs
 
+      - name: no false proofs (adversarial soundness probes)
+        run: python3 verify/false_proof_probe.py
+
       - name: examples verify as documented
         run: verify/check_examples.sh
 
       - name: examples compile to VALID wasm
         run: python3 verify/compile_examples.py
+
+      - name: examples EXECUTE correctly in a mocked NEAR host
+        run: python3 verify/execute_examples.py
