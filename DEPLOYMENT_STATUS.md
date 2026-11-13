@@ -97,5 +97,7 @@ redeploy (`--force` without re-init).
    checks reflection verdict and dual-stream collisions; could also check
    z3 verification status).
 3. Deploy a generated contract (not the handwritten placeholder) to testnet.
-4. **DONE** — Frontend demo at `frontend/index.html` connects to NEAR testnet,
-deploys `.redsigma` contracts, executes methods, and reads state.
+4. **DONE** — Frontend demo deployed to GitHub Pages at
+   https://sudo-ai-git.github.io/redsigma/ (served from `docs/` on `main`).
+   Connects to NEAR testnet, deploys `.redsigma` contracts, executes methods,
+   and reads state from the browser.
