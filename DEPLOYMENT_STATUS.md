@@ -2,15 +2,34 @@
 
 ## Summary
 
-- **Core implementation**: ✅ 121 tests passing, 0 failing (`cargo test --workspace`)
-- **Verification pipeline**: ✅ z3 tri-state verifier + falsifiable self-test (17/17)
+- **Core implementation**: ✅ 138 tests passing, 0 failing (`cargo test --workspace`)
+- **Verification pipeline**: ✅ z3 tri-state verifier + falsifiable self-test (18/18)
 - **Testnet deployment**: ✅ **DEPLOYED AND VERIFIED** (was DNS-blocked; RPC is reachable again)
-- **Honest scope**: the deployed contract is **handwritten Rust**, not generated
-  from a `.redsigma` file — `compile()` is a stub. It demonstrates state
-  persistence and the NEAR deployment flow; it does not execute REDΣSIGMA source
-  and does not run the z3 verifier.
+- **Honest scope**: the *currently running* code parses `.redsigma` source and
+  proof-checks it on chain, but method execution goes through the tree-walking
+  runtime interpreter — not through this compiler's WASM output. It demonstrates
+  state persistence and the NEAR deployment flow.
 
-## Deployed Contract (verified 2026-11-12)
+## Redeploy is blocked by storage cost (updated 2026-11-13)
+
+`contracts/test-contract` now depends on the codegen crates, so rebuilding it
+links the whole compiler/verifier chain into the module:
+
+| Build | Size | Code section |
+|---|---|---|
+| deployed (previous revision) | 185,665 bytes | — |
+| current source | **843,922 bytes** | 477,772 bytes |
+
+`opt-level="z"`, `lto=true`, `codegen-units=1`, `panic="abort"` are already set.
+At the 1e-5 NEAR/byte storage rate the current module needs **≈8.44 NEAR**; the
+account holds **2.22 NEAR**. Shortfall: **≈6.22 NEAR**.
+
+So the redeploy is blocked on funding/size, not correctness. Until it is
+resolved, `redsigma.s03-gate.testnet` keeps running the previous revision
+(interpreter path) and the local `redsigma_test_contract.wasm` does not match
+the on-chain code hash.
+
+## Deployed Contract (verified 2026-11-12; re-verified 2026-11-13)
 
 | Field | Value |
 |---|---|

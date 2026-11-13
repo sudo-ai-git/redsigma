@@ -579,15 +579,20 @@ text), and CI runs this script on every push.
 
 ## NEAR testnet — live
 
-A **handwritten Rust** NEAR contract is deployed. The compiler can now emit
-WASM from `.redsigma` source (see below), but the on-chain contract is still
-handwritten Rust — nothing on the deployed path exercises the generated code:
+A NEAR contract is deployed and answering views. The **running** code on
+`redsigma.s03-gate.testnet` was built from the previous revision of
+`contracts/test-contract`, which used a hand-written runtime interpreter:
+`.redsigma` source is parsed and proof-checked on chain, but the *execution*
+of a method runs through the interpreter, not through WASM produced by this
+compiler.
 
 | | |
 |---|---|
 | Account | `redsigma.s03-gate.testnet` |
 | Code hash | `5Tc9emgMWUQSmmBuh9VuXH4RD4ygniQ5ZqkGcz1VvFqq` |
-| Storage | 185,925 bytes |
+| Storage | 185,925 bytes (≈1.86 NEAR locked) |
+| Balance | ~2.22 NEAR |
+| View check | `near view redsigma.s03-gate.testnet get_contract_count '{}'` → `2` |
 
 ```bash
 # read
@@ -604,8 +609,15 @@ near call redsigma.s03-gate.testnet execute \
   --accountId redsigma.s03-gate.testnet
 ```
 
-This is a handwritten Rust NEAR contract, not one generated from a `.redsigma`
-file — see **Project status** below.
+**Redeploying is currently blocked by storage cost, not by correctness.**
+Rebuilding `contracts/test-contract` now that it depends on the codegen crates
+produces a **843,922-byte** module (477,772 bytes of it in the code section —
+the whole compiler/verifier chain linked in). Storing that costs ≈8.44 NEAR at
+the 1e-5 NEAR/byte rate and the account holds 2.22 NEAR, so a redeploy is
+≈6.22 NEAR short. `opt-level="z"` + `lto=true` are already set; the size is
+the real cost of bundling the compiler into the contract, not a tuning
+problem. Until that is resolved, the deployed contract stays on the
+interpreter path described above.
 
 ---
 
@@ -650,7 +662,7 @@ The 231-gate checksums must not be presented as a security mechanism.
   6-layer reflection, 231-gate checksums.
 - `compile()` produces real, wasmtime-validated WASM from `.redsigma` source
   (all four examples, plus if/while/for/match control flow).
-- `cargo test --workspace`: 121 tests passing.
+- `cargo test --workspace`: 138 tests passing across 27 suites.
 - A NEAR test contract, deployed and exercised on testnet.
 
 **Known divergences (honest limitations):**
@@ -663,6 +675,10 @@ The 231-gate checksums must not be presented as a security mechanism.
 - `codegen/src/wat.rs` is a real WAT emitter but is reached only by
   `codegen/examples/emit_wat.rs`; it is not on the compile path (the compile
   path now goes through `near_abi::emit_near_module`).
+- **Redeploying the rebuilt test contract is storage-cost blocked**, not broken:
+  with the codegen crates now linked in, the module is 843,922 bytes (≈8.44
+  NEAR to store) against a 2.22 NEAR balance — a ≈6.22 NEAR shortfall. See
+  **NEAR testnet — live** above.
 
 **Not implemented yet:**
 
