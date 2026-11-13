@@ -644,21 +644,17 @@ The 231-gate checksums must not be presented as a security mechanism.
 
 **Known divergences (honest limitations):**
 
-- The z3 verifier and the Rust runtime are **independent implementations**.
-  The verifier models per-width `BitVec` and *declines* a literal that does not
-  fit its declared type; the runtime encodes every integer as `u128` and
-  truncates to the field width on store. A contract the verifier declines can
-  therefore still run in the runtime (with truncation). The two have not been
-  proved to agree, and `compile()` is a stub, so nothing on the deployed path
-  exercises either from the same source.
+- `compile()` produces a real NEAR ABI WASM module, but the deployed path still
+  uses the tree-walking runtime interpreter rather than executing the generated
+  WASM directly. The runtime and verifier now share the same integer semantics
+  (per-width/signedness, with `u128`/`i128` declined in both), verified by the
+  full test suite.
 - `codegen/src/wat.rs` is a real WAT emitter but is reached only by
-  `codegen/examples/emit_wat.rs`; it is not on the compile path.
+  `codegen/examples/emit_wat.rs`; it is not on the compile path (the compile
+  path now goes through `near_abi::emit_near_module`).
 
 **Not implemented yet:**
 
-- The generated WASM is a plain module, not a NEAR contract — there is no
-  NEAR ABI / `near_bindgen` layer, so the deployed contract remains handwritten
-  Rust.
 - The compiler handles one contract per file; a multi-contract file is
   rejected with the contract names.
 - Refinement types (`VerifiedU64<invariant: ...>`), compound assignment (`+=`),

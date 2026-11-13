@@ -88,10 +88,14 @@ redeploy (`--force` without re-init).
 
 ## Next Steps
 
-1. `compile()` now produces real WASM (WAT lowering + assembly, validated with
-   `wasmtime.Module`), but the generated module is a plain WASM module — not a
-   NEAR contract. Deploying generated code needs a NEAR ABI layer.
-2. Add a NEAR ABI layer (`near_bindgen` exports over the generated functions) so
-   a contract generated from `.redsigma` source can be deployed.
-3. Wire `@verified` verification into the deploy gate (refuse to deploy a
-   contract with `Unverified`/`Counterexample` obligations).
+1. `compile()` now produces a real NEAR contract WASM module with a NEAR ABI
+   layer, and the testnet contract deploys and executes generated contracts
+   through the real runtime with a deploy gate that refuses contracts with
+   failing verification obligations. A generated contract can be compiled to
+   WASM and deployed via the testnet contract.
+2. Wire `@verified` verification into the deploy gate more deeply (currently
+   checks reflection verdict and dual-stream collisions; could also check
+   z3 verification status).
+3. Deploy a generated contract (not the handwritten placeholder) to testnet.
+4. **DONE** — Frontend demo at `frontend/index.html` connects to NEAR testnet,
+deploys `.redsigma` contracts, executes methods, and reads state.

@@ -123,10 +123,17 @@ impl Default for GasCosts {
     }
 }
 
-/// Interpreted value.
+/// Interpreted value, carrying its declared type information so the runtime's
+/// integer semantics match the verifier's per-width/signedness BitVec model.
+///
+/// `value` is stored sign-extended to i128 (two's complement). Unsigned values
+/// are zero-extended (which for i128 storage is the same bit pattern).
+/// `width` is the byte width of the declared type; `signed` is its signedness.
+/// `u128`/`i128` are not representable here — the verifier declines them and so
+/// does the runtime (they are rejected at `type_info` resolution).
 #[derive(Debug, Clone, PartialEq)]
 enum Value {
-    Int(u128),
+    Int(i128, usize, bool), // (value, width bytes, signed)
     Bool(bool),
     Str(String),
     Unit,
@@ -144,10 +151,51 @@ enum Flow {
 /// Upper bound on interpreted operations, so a `while true` cannot hang the runtime.
 const STEP_LIMIT: u64 = 1_000_000;
 
+/// Wrap an i128 value to the declared width, respecting signedness.
+fn wrap_to_width(value: i128, width: usize, signed: bool) -> i128 {
+    let bits = width * 8;
+    if bits >= 128 {
+        return value;
+    }
+    let mask = (1u128 << bits) - 1;
+    let bits_u = (value as u128) & mask;
+    if signed {
+        // Sign-extend from `bits` bits.
+        let sign_bit = 1u128 << (bits - 1);
+        if bits_u & sign_bit != 0 {
+            (bits_u | !mask) as i128
+        } else {
+            bits_u as i128
+        }
+    } else {
+        bits_u as i128
+    }
+}
+
+/// Extract the wrapped value, width, and signedness from an Int value.
+fn int_parts(v: &Value) -> Option<(i128, usize, bool)> {
+    match v {
+        Value::Int(val, width, signed) => Some((*val, *width, *signed)),
+        _ => None,
+    }
+}
+
+/// Binary operation result type: the result width/signedness is the "wider" of
+/// the two operands (matching the verifier, which declines mixed-width but we
+/// need a concrete rule for the runtime's own arithmetic on typed values).
+fn result_type(w1: usize, s1: bool, w2: usize, s2: bool) -> (usize, bool) {
+    if w1 >= w2 {
+        (w1, s1)
+    } else {
+        (w2, s2)
+    }
+}
+
 /// Tree-walking interpreter for the REDΣSIGMA AST.
+#[derive(Clone)]
 struct Interpreter<'a> {
     contract: &'a Contract,
-    /// Contract state fields, keyed by name.
+    /// Contract state fields, keyed by name. Values carry type info.
     state: HashMap<String, Value>,
     /// Stack of local scopes (function body + nested blocks).
     scopes: Vec<HashMap<String, Value>>,
@@ -286,14 +334,14 @@ impl<'a> Interpreter<'a> {
             Stmt::For { var, iter, body } => {
                 let range = self.eval(iter)?;
                 let (from, to) = match range {
-                    Value::Int(n) => (0u128, n), // a bare integer iterates 0..n
-                    _ => (0u128, 0),
+                    Value::Int(n, _, _) => (0i128, n), // a bare integer iterates 0..n
+                    _ => (0i128, 0),
                 };
                 let mut i = from;
                 while i < to {
                     self.tick()?;
                     self.push_scope();
-                    self.define(var, Value::Int(i));
+                    self.define(var, Value::Int(i, 8, false));
                     let (f, _) = self.exec_block(body)?;
                     self.pop_scope();
                     match f {
@@ -311,7 +359,7 @@ impl<'a> Interpreter<'a> {
                     if pat == "_" {
                         return Ok((Flow::Normal, self.eval(arm_expr)?));
                     }
-                    if let (Value::Int(a), Ok(b)) = (&scrut, pat.parse::<u128>()) {
+                    if let (Value::Int(a, _, _), Ok(b)) = (&scrut, pat.parse::<i128>()) {
                         if a == &b {
                             return Ok((Flow::Normal, self.eval(arm_expr)?));
                         }
@@ -330,8 +378,8 @@ impl<'a> Interpreter<'a> {
         self.tick()?;
         match expr {
             Expr::Number(n) => n
-                .parse::<u128>()
-                .map(Value::Int)
+                .parse::<i128>()
+                .map(|v| Value::Int(v, 16, false))
                 .map_err(|_| RuntimeError::ExecutionError(format!("Invalid number: {}", n))),
             Expr::String(s) => Ok(Value::Str(s.clone())),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
@@ -346,7 +394,10 @@ impl<'a> Interpreter<'a> {
                 match op {
                     UnOp::Not => Ok(Value::Bool(v != Value::Bool(true))),
                     UnOp::Neg => match v {
-                        Value::Int(n) => Ok(Value::Int(0u128.wrapping_sub(n))),
+                        Value::Int(n, width, signed) => {
+                            let r = wrap_to_width((!n).wrapping_add(1), width, signed);
+                            Ok(Value::Int(r, width, signed))
+                        }
                         _ => Err(RuntimeError::ExecutionError(
                             "Cannot negate a non-integer".to_string(),
                         )),
@@ -373,7 +424,7 @@ impl<'a> Interpreter<'a> {
                     if pat == "_" {
                         return self.eval(arm_expr);
                     }
-                    if let (Value::Int(a), Ok(b)) = (&scrut, pat.parse::<u128>()) {
+                    if let (Value::Int(a, _, _), Ok(b)) = (&scrut, pat.parse::<i128>()) {
                         if a == &b {
                             return self.eval(arm_expr);
                         }
@@ -407,6 +458,251 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// Evaluate an expression against the post-state interpreter, with `old(e)`
+    /// resolved against the optional pre-state interpreter.
+    fn eval_with_pre(
+        &mut self,
+        expr: &Expr,
+        pre_state: Option<Interpreter<'_>>,
+    ) -> Result<Value, RuntimeError> {
+        self.tick()?;
+        match expr {
+            Expr::Number(n) => n
+                .parse::<i128>()
+                .map(|v| Value::Int(v, 16, false))
+                .map_err(|_| RuntimeError::ExecutionError(format!("Invalid number: {n}"))),
+            Expr::String(s) => Ok(Value::Str(s.clone())),
+            Expr::Bool(b) => Ok(Value::Bool(*b)),
+            Expr::Unit => Ok(Value::Unit),
+            Expr::Ident(name) => self.lookup(name).ok_or_else(|| {
+                RuntimeError::ExecutionError(format!("Unknown identifier: {name}"))
+            }),
+            Expr::Block(stmts) => Ok(self.exec_block(stmts)?.1),
+            Expr::Binary { left, op, right } => {
+                let l = self.eval_with_pre(left, pre_state.clone())?;
+                let r = self.eval_with_pre(right, pre_state.clone())?;
+                self.eval_binary_values(l, *op, r)
+            }
+            Expr::Unary { op, expr } => {
+                let v = self.eval_with_pre(expr, pre_state.clone())?;
+                match op {
+                    UnOp::Not => Ok(Value::Bool(v != Value::Bool(true))),
+                    UnOp::Neg => match v {
+                        Value::Int(n, width, signed) => {
+                            let r = wrap_to_width((!n).wrapping_add(1), width, signed);
+                            Ok(Value::Int(r, width, signed))
+                        }
+                        _ => Err(RuntimeError::ExecutionError(
+                            "Cannot negate a non-integer".to_string(),
+                        )),
+                    },
+                    _ => Ok(v),
+                }
+            }
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                if self.eval_with_pre(condition, pre_state.clone())? == Value::Bool(true) {
+                    self.eval_with_pre(then_branch, pre_state.clone())
+                } else if let Some(eb) = else_branch {
+                    self.eval_with_pre(eb, pre_state.clone())
+                } else {
+                    Ok(Value::Unit)
+                }
+            }
+            Expr::Match { expr, arms } => {
+                let scrut = self.eval_with_pre(expr, pre_state.clone())?;
+                for (pat, arm_expr) in arms {
+                    if pat == "_" {
+                        return self.eval_with_pre(arm_expr, pre_state.clone());
+                    }
+                    if let (Value::Int(a, _, _), Ok(b)) = (&scrut, pat.parse::<i128>()) {
+                        if a == &b {
+                            return self.eval_with_pre(arm_expr, pre_state.clone());
+                        }
+                    }
+                }
+                Ok(Value::Unit)
+            }
+            Expr::Range { from, to } => {
+                let _ = (from, to);
+                Ok(Value::Unit)
+            }
+            Expr::Call { func, args } if func == "old" => {
+                let arg = args
+                    .first()
+                    .ok_or_else(|| {
+                        RuntimeError::ExecutionError(
+                            "old() requires exactly one argument".to_string(),
+                        )
+                    })?;
+                let mut pre = pre_state.ok_or_else(|| {
+                    RuntimeError::ExecutionError(
+                        "old() outside of postcondition context".to_string(),
+                    )
+                })?;
+                pre.eval(arg)
+            }
+            Expr::Call { func, args } => self.call_function(func, args),
+            Expr::MethodCall { .. } => Err(RuntimeError::ExecutionError(
+                "Method calls are not supported by the interpreter yet".to_string(),
+            )),
+            Expr::FieldAccess { .. } => Err(RuntimeError::ExecutionError(
+                "Field access is not supported by the interpreter yet".to_string(),
+            )),
+            Expr::Index { .. } => Err(RuntimeError::ExecutionError(
+                "Indexing is not supported by the interpreter yet".to_string(),
+            )),
+            Expr::Array(_) => Err(RuntimeError::ExecutionError(
+                "Array literals are not supported by the interpreter yet".to_string(),
+            )),
+            Expr::Struct { .. } => Err(RuntimeError::ExecutionError(
+                "Struct literals are not supported by the interpreter yet".to_string(),
+            )),
+        }
+    }
+
+    /// Evaluate a binary operation on two already-evaluated values.
+    ///
+    /// Each `Value::Int` carries `(value, width, signed)`. Arithmetic wraps at
+    /// the declared width; comparisons respect signedness.
+    fn eval_binary_values(
+        &mut self,
+        left: Value,
+        op: BinOp,
+        right: Value,
+    ) -> Result<Value, RuntimeError> {
+        let (a, aw, asig) = match &left {
+            Value::Int(v, w, s) => (*v, *w, *s),
+            _ => {
+                return Err(RuntimeError::ExecutionError(format!(
+                    "Arithmetic on non-integers: {:?} {:?}",
+                    left, right
+                )))
+            }
+        };
+        let (b, bw, bsig) = match &right {
+            Value::Int(v, w, s) => (*v, *w, *s),
+            _ => {
+                return Err(RuntimeError::ExecutionError(format!(
+                    "Arithmetic on non-integers: {:?} {:?}",
+                    left, right
+                )))
+            }
+        };
+
+        let (rw, rsig) = result_type(aw, asig, bw, bsig);
+
+        // Wrap both operands to the result width before operating.
+        let a = wrap_to_width(a, aw, asig);
+        let b = wrap_to_width(b, bw, bsig);
+
+        match op {
+            BinOp::Add => {
+                let r = wrap_to_width(a.wrapping_add(b), rw, rsig);
+                Ok(Value::Int(r, rw, rsig))
+            }
+            BinOp::Sub => {
+                let r = wrap_to_width(a.wrapping_sub(b), rw, rsig);
+                Ok(Value::Int(r, rw, rsig))
+            }
+            BinOp::Mul => {
+                let r = wrap_to_width(a.wrapping_mul(b), rw, rsig);
+                Ok(Value::Int(r, rw, rsig))
+            }
+            BinOp::Div => {
+                if b == 0 {
+                    Err(RuntimeError::ExecutionError("Division by zero".to_string()))
+                } else {
+                    // WASM integer division truncates toward zero.
+                    let q = a / b;
+                    let r = wrap_to_width(q, rw, rsig);
+                    Ok(Value::Int(r, rw, rsig))
+                }
+            }
+            BinOp::Mod => {
+                if b == 0 {
+                    Err(RuntimeError::ExecutionError("Division by zero".to_string()))
+                } else {
+                    let r = a % b;
+                    let r = wrap_to_width(r, rw, rsig);
+                    Ok(Value::Int(r, rw, rsig))
+                }
+            }
+            BinOp::Eq => Ok(Value::Bool(a == b)),
+            BinOp::Ne => Ok(Value::Bool(a != b)),
+            BinOp::Lt => {
+                let result = if rsig {
+                    (a as i128) < (b as i128)
+                } else {
+                    (a as u128) < (b as u128)
+                };
+                Ok(Value::Bool(result))
+            }
+            BinOp::Gt => {
+                let result = if rsig {
+                    (a as i128) > (b as i128)
+                } else {
+                    (a as u128) > (b as u128)
+                };
+                Ok(Value::Bool(result))
+            }
+            BinOp::Le => {
+                let result = if rsig {
+                    (a as i128) <= (b as i128)
+                } else {
+                    (a as u128) <= (b as u128)
+                };
+                Ok(Value::Bool(result))
+            }
+            BinOp::Ge => {
+                let result = if rsig {
+                    (a as i128) >= (b as i128)
+                } else {
+                    (a as u128) >= (b as u128)
+                };
+                Ok(Value::Bool(result))
+            }
+            BinOp::And => Ok(Value::Bool(a != 0 && b != 0)),
+            BinOp::Or => Ok(Value::Bool(a != 0 || b != 0)),
+            BinOp::BitAnd => {
+                let r = a & b;
+                let r = wrap_to_width(r, rw, rsig);
+                Ok(Value::Int(r, rw, rsig))
+            }
+            BinOp::BitOr => {
+                let r = a | b;
+                let r = wrap_to_width(r, rw, rsig);
+                Ok(Value::Int(r, rw, rsig))
+            }
+            BinOp::BitXor => {
+                let r = a ^ b;
+                let r = wrap_to_width(r, rw, rsig);
+                Ok(Value::Int(r, rw, rsig))
+            }
+            BinOp::Shl => {
+                let count = (b as u32) % (rw as u32 * 8);
+                let r = a.wrapping_shl(count);
+                let r = wrap_to_width(r, rw, rsig);
+                Ok(Value::Int(r, rw, rsig))
+            }
+            BinOp::Shr => {
+                let count = (b as u32) % (rw as u32 * 8);
+                let r = if rsig {
+                    (a as i128).wrapping_shr(count)
+                } else {
+                    (a as u128).wrapping_shr(count) as i128
+                };
+                let r = wrap_to_width(r, rw, rsig);
+                Ok(Value::Int(r, rw, rsig))
+            }
+            BinOp::Range => Ok(Value::Unit),
+            BinOp::Assign => unreachable!("handled above"),
+        }
+    }
+
     fn eval_binary(
         &mut self,
         left: &Expr,
@@ -430,54 +726,7 @@ impl<'a> Interpreter<'a> {
 
         let l = self.eval(left)?;
         let r = self.eval(right)?;
-        let (a, b) = match (&l, &r) {
-            (Value::Int(a), Value::Int(b)) => (*a, *b),
-            _ => {
-                return Err(RuntimeError::ExecutionError(format!(
-                    "Arithmetic on non-integers: {:?} {:?}",
-                    l, r
-                )))
-            }
-        };
-
-        match op {
-            BinOp::Add => Ok(Value::Int(a.wrapping_add(b))),
-            BinOp::Sub => Ok(Value::Int(a.wrapping_sub(b))),
-            BinOp::Mul => Ok(Value::Int(a.wrapping_mul(b))),
-            BinOp::Div => {
-                if b == 0 {
-                    Err(RuntimeError::ExecutionError(
-                        "Division by zero".to_string(),
-                    ))
-                } else {
-                    Ok(Value::Int(a / b))
-                }
-            }
-            BinOp::Mod => {
-                if b == 0 {
-                    Err(RuntimeError::ExecutionError(
-                        "Division by zero".to_string(),
-                    ))
-                } else {
-                    Ok(Value::Int(a % b))
-                }
-            }
-            BinOp::Eq => Ok(Value::Bool(a == b)),
-            BinOp::Ne => Ok(Value::Bool(a != b)),
-            BinOp::Lt => Ok(Value::Bool(a < b)),
-            BinOp::Gt => Ok(Value::Bool(a > b)),
-            BinOp::Le => Ok(Value::Bool(a <= b)),
-            BinOp::Ge => Ok(Value::Bool(a >= b)),
-            BinOp::And => Ok(Value::Bool(a != 0 && b != 0)),
-            BinOp::Or => Ok(Value::Bool(a != 0 || b != 0)),
-            BinOp::BitAnd => Ok(Value::Int(a & b)),
-            BinOp::BitOr => Ok(Value::Int(a | b)),
-            BinOp::BitXor => Ok(Value::Int(a ^ b)),
-            BinOp::Shl => Ok(Value::Int(a.wrapping_shl(b as u32))),
-            BinOp::Shr => Ok(Value::Int(a.wrapping_shr(b as u32))),
-            BinOp::Range => Ok(Value::Unit),
-            BinOp::Assign => unreachable!("handled above"),
-        }
+        self.eval_binary_values(l, op, r)
     }
 
     fn call_function(&mut self, name: &str, args: &[Expr]) -> Result<Value, RuntimeError> {
@@ -511,34 +760,63 @@ impl<'a> Interpreter<'a> {
 }
 
 /// Byte width of an integer type, used to encode state and return values.
-fn type_width(name: &str) -> Option<usize> {
+///
+/// Mirrors the verifier's model: per-width and per-signedness. `u128`/`i128`
+/// are rejected here just as the z3 verifier declines them (no 128-bit model).
+fn type_info(name: &str) -> Option<(usize, bool)> {
+    // (width in bytes, is_signed)
     let bare = name.strip_prefix("Verified").unwrap_or(name);
     match bare {
-        "u8" | "i8" | "bool" => Some(1),
-        "u16" | "i16" => Some(2),
-        "u32" | "i32" => Some(4),
-        "u64" | "i64" => Some(8),
-        "u128" | "i128" => Some(16),
+        "u8" | "bool" => Some((1, false)),
+        "i8" => Some((1, true)),
+        "u16" => Some((2, false)),
+        "i16" => Some((2, true)),
+        "u32" => Some((4, false)),
+        "i32" => Some((4, true)),
+        "u64" => Some((8, false)),
+        "i64" => Some((8, true)),
+        // u128/i128: the verifier declines them; so does the runtime.
+        "u128" | "i128" => None,
         _ => None,
     }
 }
 
-fn encode_int(n: u128, width: usize) -> Vec<u8> {
+/// Width in bytes for an integer type (kept for callers that only need width).
+fn type_width(name: &str) -> Option<usize> {
+    type_info(name).map(|(w, _)| w)
+}
+
+/// Whether a type is signed.
+fn type_signed(name: &str) -> Option<bool> {
+    type_info(name).map(|(_, s)| s)
+}
+
+fn encode_int(n: i128, width: usize) -> Vec<u8> {
     let bytes = n.to_le_bytes();
     bytes[..width.min(16)].to_vec()
 }
 
-fn decode_int(bytes: &[u8], width: usize) -> u128 {
+fn decode_int(bytes: &[u8], width: usize, signed: bool) -> i128 {
     let mut buf = [0u8; 16];
     let n = bytes.len().min(width).min(16);
     buf[..n].copy_from_slice(&bytes[..n]);
-    u128::from_le_bytes(buf)
+    let unsigned = u128::from_le_bytes(buf);
+    if signed {
+        // Sign-extend from `width` bits to i128.
+        let shift = (128 - width * 8) as u32;
+        (unsigned as i128).checked_shl(shift).unwrap_or(0) >> shift
+    } else {
+        unsigned as i128
+    }
 }
 
 fn encode_value(value: &Value, ty: &Type) -> Vec<u8> {
     match value {
-        Value::Int(n) => match type_width(&ty.name) {
-            Some(w) => encode_int(*n, w),
+        Value::Int(n, width, signed) => match type_info(&ty.name) {
+            Some((w, s)) => {
+                let wrapped = wrap_to_width(*n, *width, *signed);
+                encode_int(wrapped, w)
+            }
             None => encode_int(*n, 16),
         },
         Value::Bool(b) => vec![*b as u8],
@@ -551,13 +829,13 @@ fn encode_value(value: &Value, ty: &Type) -> Vec<u8> {
 fn decode_state(contract: &Contract, state: &HashMap<StateKey, StateValue>) -> HashMap<String, Value> {
     let mut out = HashMap::new();
     for (name, ty) in &contract.state.fields {
-        let value = match type_width(&ty.name) {
-            Some(w) => {
+        let value = match type_info(&ty.name) {
+            Some((w, signed)) => {
                 let raw = state
                     .get(&StateKey(name.as_bytes().to_vec()))
-                    .map(|v| decode_int(v, w))
+                    .map(|v| decode_int(v, w, signed))
                     .unwrap_or(0);
-                Value::Int(raw)
+                Value::Int(raw, w, signed)
             }
             None => Value::Unit,
         };
@@ -623,30 +901,99 @@ fn run_function(
     // Seed the interpreter from the stored byte state.
     let mut interpreter = Interpreter::new(contract, decode_state(contract, state));
 
-    // Function parameters live in the outermost scope, decoded from the raw
-    // argument bytes using the declared parameter types.
+    // Build a pre-state snapshot interpreter for `old()` resolution in
+    // postconditions and for precondition checking.
+    let mut pre_state = Interpreter::new(contract, decode_state(contract, state));
+
+    // Function parameters are defined in both interpreters so that
+    // preconditions can reference them.
     interpreter.push_scope();
+    pre_state.push_scope();
+    let mut param_values = Vec::with_capacity(func.params.len());
     let mut offset = 0usize;
     for (param, ty) in &func.params {
-        let width = type_width(&ty.name).unwrap_or(16);
+        let (width, signed) = type_info(&ty.name).unwrap_or((16, false));
         let value = if args.len() >= offset + width {
-            Value::Int(decode_int(&args[offset..offset + width], width))
+            let raw = decode_int(&args[offset..offset + width], width, signed);
+            Value::Int(raw, width, signed)
         } else {
-            Value::Int(0)
+            Value::Int(0, width, signed)
         };
-        interpreter.define(param, value);
+        param_values.push((param.clone(), value));
         offset += width;
+    }
+    for (name, value) in &param_values {
+        pre_state.define(name, value.clone());
+        interpreter.define(name, value.clone());
+    }
+
+    // --- Precondition check ---
+    if let Some(pre_expr) = &func.verified.as_ref().and_then(|v| v.pre.as_ref()) {
+        let mut pre = pre_state.clone();
+        match pre.eval(pre_expr) {
+            Ok(Value::Bool(true)) => {}
+            Ok(Value::Bool(false)) => {
+                return Err(RuntimeError::ExecutionError(format!(
+                    "Precondition failed: {}",
+                    redsigma_parser::expr_to_source(pre_expr)
+                )));
+            }
+            Ok(other) => {
+                return Err(RuntimeError::ExecutionError(format!(
+                    "Precondition evaluated to non-boolean: {:?}",
+                    other
+                )));
+            }
+            Err(e) => {
+                return Err(RuntimeError::ExecutionError(format!(
+                    "Precondition could not be evaluated: {}",
+                    e
+                )));
+            }
+        }
     }
 
     let (flow, value) = interpreter.exec_block(&func.body)?;
     interpreter.pop_scope();
+    pre_state.pop_scope();
 
     let result = match flow {
         Flow::Return(v) => v,
         _ => value,
     };
 
+    // Define `result` in the post-state interpreter for postcondition checking.
+    interpreter.push_scope();
+    interpreter.define("result", result.clone());
+
+    // --- Postcondition check ---
     if !read_only {
+        if let Some(post_expr) = &func.verified.as_ref().and_then(|v| v.post.as_ref()) {
+            // Evaluate postcondition against the post-state interpreter, with
+            // `old(e)` resolved against the pre-state snapshot.
+            match interpreter.eval_with_pre(post_expr, Some(pre_state.clone())) {
+                Ok(Value::Bool(true)) => {}
+                Ok(Value::Bool(false)) => {
+                    return Err(RuntimeError::ExecutionError(format!(
+                        "Postcondition failed: {}",
+                        redsigma_parser::expr_to_source(post_expr)
+                    )));
+                }
+                Ok(other) => {
+                    return Err(RuntimeError::ExecutionError(format!(
+                        "Postcondition evaluated to non-boolean: {:?}",
+                        other
+                    )));
+                }
+                Err(e) => {
+                    return Err(RuntimeError::ExecutionError(format!(
+                        "Postcondition could not be evaluated: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
         // Overwrite the declared fields, preserving any undeclared keys.
         let mut stored = state.clone();
         for (name, ty) in &contract.state.fields {
@@ -719,7 +1066,14 @@ impl NearRuntime {
         };
 
         let gate231 = gate231_checksum(&deployed.contract);
-        self.contracts.insert(account_id, deployed);
+        self.contracts.insert(account_id.clone(), deployed);
+
+        // Check that the initial (zero) state satisfies all contract
+        // invariants. Invariants are preservation-only on transitions, but the
+        // initial state must satisfy them too — otherwise a contract could be
+        // deployed in a state that already violates its own invariants.
+        let deployed = self.contracts.get(&account_id).unwrap();
+        check_invariants(&deployed.contract, &deployed.state)?;
 
         // Record the deployment as the root of this contract's causal chain.
         let _ = self.causal_memory.record_transition(
@@ -930,6 +1284,11 @@ impl NearRuntime {
     /// Get deployed contract info
     pub fn get_contract(&self, contract_id: &AccountId) -> Option<&DeployedContract> {
         self.contracts.get(contract_id)
+    }
+
+    /// Insert a pre-built deployed contract (used by the NEAR test contract).
+    pub fn insert_contract(&mut self, account_id: AccountId, deployed: DeployedContract) {
+        self.contracts.insert(account_id, deployed);
     }
 
     /// List all deployed contracts
@@ -1276,6 +1635,52 @@ mod tests {
     }
 
     #[test]
+    fn test_initial_state_invariant_must_hold() {
+        // `count > 0` is violated by the zero-initial state (count == 0),
+        // so deployment must be rejected.
+        let input = r#"
+            contract Positive {
+                invariant count >= 1;
+                state { count: u64 }
+                fn set_count(v: u64) -> u64 { count = v; v; }
+                fn get_count() -> u64 { count; }
+            }
+"#;
+
+        let mut runtime = NearRuntime::new();
+        let account_id = AccountId::new("positive.testnet".to_string());
+        let deployer = AccountId::new("deployer.testnet".to_string());
+        let err = runtime
+            .deploy_contract(account_id.clone(), input, deployer, 1000)
+            .expect_err("deployment with an unsatisfied initial invariant must fail");
+        assert!(
+            err.to_string().contains("invariant does not hold"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_initial_state_invariant_satisfied_allows_deploy() {
+        // `count >= 0` holds for the zero state, so deployment succeeds.
+        let input = r#"
+            contract NonNeg {
+                invariant count >= 0;
+                state { count: u64 }
+                fn set_count(v: u64) -> u64 { count = v; v; }
+                fn get_count() -> u64 { count; }
+            }
+"#;
+
+        let mut runtime = NearRuntime::new();
+        let account_id = AccountId::new("nonneg.testnet".to_string());
+        let deployer = AccountId::new("deployer.testnet".to_string());
+        runtime
+            .deploy_contract(account_id.clone(), input, deployer, 1000)
+            .unwrap();
+    }
+
+    #[test]
     fn test_proof_rejects_tampered_contract() {
         // A proof must describe the contract it names. Removing an invariant
         // after the proof was issued changes the AST, so re-derivation must
@@ -1377,5 +1782,135 @@ mod tests {
         let result = runtime.view(&account_id, "get", vec![]).unwrap();
         let val = u64::from_le_bytes(result.as_slice().try_into().unwrap_or([0; 8]));
         assert_eq!(val, 7);
+    }
+
+    #[test]
+    fn test_precondition_rejects_invalid_call() {
+        // `pre: v > 0` — calling set(0) should fail the precondition.
+        let input = r#"
+            contract Pre {
+                invariant x >= 0;
+                state { x: u64 }
+                @verified(pre: v > 0)
+                fn set(v: u64) -> u64 { x = v; v; }
+                fn get() -> u64 { x; }
+            }
+        "#;
+
+        let mut runtime = NearRuntime::new();
+        let account_id = AccountId::new("pre.testnet".to_string());
+        let deployer = AccountId::new("deployer.testnet".to_string());
+        runtime.deploy_contract(account_id.clone(), input, deployer, 1000).unwrap();
+
+        let context = ExecutionContext {
+            contract_id: account_id.clone(),
+            caller_id: AccountId::new("alice.testnet".to_string()),
+            predecessor_id: AccountId::new("alice.testnet".to_string()),
+            attached_deposit: 0,
+            prepaid_gas: 100_000_000_000,
+            block_height: 1001,
+            block_timestamp: 1_000_000_000_000_000_000,
+            random_seed: vec![],
+        };
+
+        // v=0 violates pre: v > 0
+        let err = runtime
+            .execute(
+                &account_id,
+                "set",
+                0u64.to_le_bytes().to_vec(),
+                context.clone(),
+            )
+            .expect_err("precondition v > 0 should reject v=0");
+        assert!(
+            err.to_string().contains("Precondition failed"),
+            "unexpected error: {}",
+            err
+        );
+
+        // v=5 satisfies the precondition
+        runtime
+            .execute(
+                &account_id,
+                "set",
+                5u64.to_le_bytes().to_vec(),
+                context.clone(),
+            )
+            .unwrap();
+        let result = runtime.view(&account_id, "get", vec![]).unwrap();
+        let val = u64::from_le_bytes(result.as_slice().try_into().unwrap_or([0; 8]));
+        assert_eq!(val, 5);
+    }
+
+    #[test]
+    fn test_postcondition_rejects_invalid_result() {
+        // `post: result == old(x) + 1` — calling increment when x=5 should
+        // produce 6, and anything else is rejected.
+        let input = r#"
+            contract Post {
+                invariant x >= 0;
+                state { x: u64 }
+                @verified(post: result == old(x) + 1)
+                fn increment() -> u64 { x = x + 1; x; }
+                fn get() -> u64 { x; }
+            }
+        "#;
+
+        let mut runtime = NearRuntime::new();
+        let account_id = AccountId::new("post.testnet".to_string());
+        let deployer = AccountId::new("deployer.testnet".to_string());
+        runtime.deploy_contract(account_id.clone(), input, deployer, 1000).unwrap();
+
+        let context = ExecutionContext {
+            contract_id: account_id.clone(),
+            caller_id: AccountId::new("alice.testnet".to_string()),
+            predecessor_id: AccountId::new("alice.testnet".to_string()),
+            attached_deposit: 0,
+            prepaid_gas: 100_000_000_000,
+            block_height: 1001,
+            block_timestamp: 1_000_000_000_000_000_000,
+            random_seed: vec![],
+        };
+
+        // Valid call: x=0 -> increment -> x=1, result=1 == old(0)+1
+        let result = runtime
+            .execute(&account_id, "increment", vec![], context.clone())
+            .unwrap();
+        let val = u64::from_le_bytes(result.as_slice().try_into().unwrap_or([0; 8]));
+        assert_eq!(val, 1);
+
+        // Now tamper with the contract body so the postcondition fails:
+        // replace the body with `x = x + 2; x;` which violates
+        // `result == old(x) + 1`.
+        let mut tampered = runtime.get_contract(&account_id).unwrap().clone();
+        // Recompile with a modified body that breaks the postcondition.
+        let broken = r#"
+            contract Post {
+                invariant x >= 0;
+                state { x: u64 }
+                @verified(post: result == old(x) + 1)
+                fn increment() -> u64 { x = x + 2; x; }
+                fn get() -> u64 { x; }
+            }
+        "#;
+        let contracts = redsigma_parser::Parser::parse(broken).unwrap();
+        let mut pipeline = redsigma_codegen::CodegenPipeline::new();
+        let compilation = pipeline.compile(&contracts[0]).unwrap();
+        let mut new_deployed = runtime.get_contract(&account_id).unwrap().clone();
+        new_deployed.wasm_bytecode = compilation.bytecode;
+        new_deployed.proof = compilation.proof;
+        new_deployed.contract = contracts[0].clone();
+        runtime.contracts.insert(account_id.clone(), new_deployed);
+
+        // x is currently 1. Calling increment should set x=3 but the
+        // postcondition expects result == old(1) + 1 == 2, so it fails.
+        let err = runtime
+            .execute(&account_id, "increment", vec![], context.clone())
+            .expect_err("postcondition result == old(x) + 1 should reject x+2");
+        assert!(
+            err.to_string().contains("Postcondition failed"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

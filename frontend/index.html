@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>REDΣSIGMA — Live Testnet Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0b0c10;
+      color: #c0c0c0;
+      margin: 0;
+      padding: 20px;
+      line-height: 1.5;
+    }
+    .container { max-width: 1000px; margin: 0 auto; }
+    h1 { color: #66fcf1; margin-bottom: 10px; }
+    h2 { color: #66fcf1; border-bottom: 1px solid #1f2833; padding-bottom: 8px; margin-top: 30px; }
+    .card {
+      background: #1f2833;
+      border: 1px solid #3a4a5c;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+    .row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .col { flex: 1; min-width: 200px; }
+    label { display: block; font-size: 0.85rem; color: #66fcf1; margin-bottom: 6px; font-weight: 600; }
+    input, select, textarea {
+      width: 100%;
+      background: #0b0c10;
+      border: 1px solid #3a4a5c;
+      color: #c0c0c0;
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.9rem;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #66fcf1;
+    }
+    button {
+      background: #66fcf1;
+      color: #0b0c10;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button:hover:not(:disabled) { background: #45a29e; }
+    button.secondary { background: #3a4a5c; color: #c0c0c0; }
+    button.secondary:hover:not(:disabled) { background: #4a5a6c; }
+    pre {
+      background: #0b0c10;
+      border: 1px solid #3a4a5c;
+      border-radius: 4px;
+      padding: 12px;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .status { padding: 6px 10px; border-radius: 4px; font-size: 0.85rem; margin-bottom: 10px; }
+    .status.ok { background: #1b4d3e; color: #66fcf1; border: 1px solid #2d8a75; }
+    .status.err { background: #4d1b1b; color: #ff6b6b; border: 1px solid #8a2d2d; }
+    .status.info { background: #1b324d; color: #9acffc; border: 1px solid #2d5a8a; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-right: 6px;
+    }
+    .badge.ok { background: #1b4d3e; color: #66fcf1; }
+    .badge.err { background: #4d1b1b; color: #ff6b6b; }
+    .badge.warn { background: #4d3d1b; color: #ffd16b; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } .row { flex-direction: column; } }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+    .small { font-size: 0.8rem; color: #888; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>REDΣSIGMA</h1>
+    <p class="small">Self-verifying smart contracts — live testnet demo</p>
+
+    <!-- Connection -->
+    <div class="card">
+      <h2>1. Connect to NEAR Testnet</h2>
+      <div class="row">
+        <div class="col">
+          <label>Contract Account</label>
+          <input type="text" id="contractId" value="redsigma.s03-gate.testnet" placeholder="redsigma.s03-gate.testnet" />
+        </div>
+        <div class="col" style="display: flex; align-items: end; gap: 8px;">
+          <button id="connectBtn">Connect Wallet</button>
+          <button id="disconnectBtn" class="secondary" style="display:none;">Disconnect</button>
+        </div>
+      </div>
+      <div id="connectionStatus" class="status info">Not connected. Click "Connect Wallet" to use a NEAR testnet wallet.</div>
+    </div>
+
+    <!-- Deploy -->
+    <div class="card">
+      <h2>2. Deploy a .redsigma Contract</h2>
+      <div class="row">
+        <div class="col">
+          <label>Contract Name</label>
+          <input type="text" id="deployName" value="counter" placeholder="e.g. counter" />
+        </div>
+        <div class="col">
+          <label>Deployer Account</label>
+          <input type="text" id="deployerId" value="" placeholder="your-account.testnet" />
+        </div>
+      </div>
+      <label>Contract Source (.redsigma)</label>
+      <textarea id="deploySource" rows="10" placeholder="contract Counter {
+  invariant count >= 0;
+  state { count: u64 }
+  fn increment() -> u64 { count = count + 1; count; }
+  fn get() -> u64 { count; }
+}">contract Counter {
+  invariant count >= 0;
+  state { count: u64 }
+  fn increment() -> u64 { count = count + 1; count; }
+  fn get() -> u64 { count; }
+}</textarea>
+      <div class="row">
+        <div class="col">
+          <button id="deployBtn" class="secondary" disabled>Deploy Contract</button>
+        </div>
+      </div>
+      <div id="deployStatus"></div>
+      <pre id="deployResult" style="display:none;"></pre>
+    </div>
+
+    <!-- Execute -->
+    <div class="card grid">
+      <div>
+        <h2>3. Execute Contract Method</h2>
+        <div class="row">
+          <div class="col">
+            <label>Contract Name</label>
+            <input type="text" id="execContract" value="counter" placeholder="e.g. counter" />
+          </div>
+          <div class="col">
+            <label>Method Name</label>
+            <input type="text" id="execMethod" value="increment" placeholder="e.g. increment" />
+          </div>
+        </div>
+        <label>Method Args (raw bytes, UTF-8)</label>
+        <textarea id="execArgs" rows="3" placeholder="e.g. 100 (as bytes) or leave empty"></textarea>
+        <div class="row">
+          <div class="col">
+            <button id="execBtn" class="secondary" disabled>Execute</button>
+            <button id="viewBtn" class="secondary" disabled>View (read-only)</button>
+          </div>
+        </div>
+        <div id="execStatus"></div>
+        <pre id="execResult" style="display:none;"></pre>
+      </div>
+
+      <div>
+        <h2>4. Contract State</h2>
+        <div class="row">
+          <div class="col">
+            <label>Contract Name</label>
+            <input type="text" id="stateContract" value="counter" placeholder="e.g. counter" />
+          </div>
+          <div class="col">
+            <label>State Key (field name)</label>
+            <input type="text" id="stateKey" value="count" placeholder="e.g. count" />
+          </div>
+        </div>
+        <button id="stateBtn" class="secondary" disabled>Read State</button>
+        <div id="stateStatus"></div>
+        <pre id="stateResult" style="display:none;"></pre>
+      </div>
+    </div>
+
+    <!-- Example contracts -->
+    <div class="card">
+      <h2>Example Contracts</h2>
+      <p class="small">Click to load an example into the deploy source above:</p>
+      <div class="row">
+        <button class="secondary" onclick="loadExample('counter')">Counter</button>
+        <button class="secondary" onclick="loadExample('escrow')">Escrow</button>
+        <button class="secondary" onclick="loadExample('bounded')">Bounded Counter</button>
+      </div>
+      <div id="exampleSource" style="display:none; margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/near-api-js@0.44.2/dist/near-api-js.min.js"></script>
+  <script>
+    const { connect, keyStores, WalletConnection, utils } = nearApiJs || window;
+
+    let wallet = null;
+    let near = null;
+    let account = null;
+    let contractId = 'redsigma.s03-gate.testnet';
+
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const connectionStatus = document.getElementById('connectionStatus');
+    const deployBtn = document.getElementById('deployBtn');
+    const execBtn = document.getElementById('execBtn');
+    const viewBtn = document.getElementById('viewBtn');
+    const stateBtn = document.getElementById('stateBtn');
+
+    function setStatus(el, text, kind = 'info') {
+      el.textContent = text;
+      el.className = `status ${kind}`;
+      el.style.display = 'block';
+    }
+
+    function hideStatus(el) { el.style.display = 'none'; }
+
+    async function connectWallet() {
+      try {
+        const keyStore = new keyStores.BrowserLocalStorageKeyStore();
+        near = await connect({
+          networkId: 'testnet',
+          keyStore,
+          nodeUrl: 'https://rpc.testnet.near.org',
+          walletUrl: 'https://wallet.testnet.near.org',
+          helperUrl: 'https://helper.testnet.near.org',
+          explorerUrl: 'https://explorer.testnet.near.org',
+        });
+        wallet = new WalletConnection(near, 'redsigma-demo');
+        account = wallet.account();
+        contractId = document.getElementById('contractId').value;
+
+        connectBtn.style.display = 'none';
+        disconnectBtn.style.display = 'inline-block';
+        setStatus(connectionStatus, 'Connected as: ' + (await account.getAccountId()).account_id, 'ok');
+
+        // Enable buttons
+        deployBtn.disabled = false;
+        execBtn.disabled = false;
+        viewBtn.disabled = false;
+        stateBtn.disabled = false;
+      } catch (err) {
+        console.error(err);
+        setStatus(connectionStatus, 'Connection failed: ' + err.message, 'err');
+      }
+    }
+
+    async function disconnectWallet() {
+      if (wallet) wallet.signOut();
+      wallet = null; near = null; account = null;
+      connectBtn.style.display = 'inline-block';
+      disconnectBtn.style.display = 'none';
+      setStatus(connectionStatus, 'Disconnected.', 'info');
+      deployBtn.disabled = true;
+      execBtn.disabled = true;
+      viewBtn.disabled = true;
+      stateBtn.disabled = true;
+    }
+
+    connectBtn.addEventListener('click', connectWallet);
+    disconnectBtn.addEventListener('click', disconnectWallet);
+
+    async function callContract(method, args, viewCall = false) {
+      if (!account) throw new Error('Not connected');
+      const cid = document.getElementById('contractId').value;
+      if (viewCall) {
+        return await account.viewFunction(cid, method, args || {});
+      } else {
+        return await account.functionCall(cid, method, args || {}, 300000000000000, 0);
+      }
+    }
+
+    async function deployContract() {
+      const name = document.getElementById('deployName').value;
+      const source = document.getElementById('deploySource').value;
+      const deployer = document.getElementById('deployerId').value || (await account.getAccountId()).account_id;
+
+      deployBtn.disabled = true;
+      setStatus(deployStatus, 'Deploying contract "' + name + '"...', 'info');
+      hideStatus(deployResult);
+
+      try {
+        const result = await callContract('deploy_contract', {
+          contract_name: name,
+          source: source,
+        });
+        setStatus(deployStatus, 'Deployed successfully!', 'ok');
+        deployResult.textContent = JSON.stringify(result, null, 2);
+        deployResult.style.display = 'block';
+      } catch (err) {
+        console.error(err);
+        setStatus(deployStatus, 'Deploy failed: ' + err.message, 'err');
+      } finally {
+        deployBtn.disabled = false;
+      }
+    }
+
+    async function executeContract(viewCall = false) {
+      const contractName = document.getElementById('execContract').value;
+      const methodName = document.getElementById('execMethod').value;
+      const argsText = document.getElementById('execArgs').value;
+
+      let args = [];
+      if (argsText.trim()) {
+        args = new TextEncoder().encode(argsText);
+      }
+
+      const btn = viewCall ? viewBtn : execBtn;
+      btn.disabled = true;
+      const statusEl = document.getElementById('execStatus');
+      const resultEl = document.getElementById('execResult');
+      setStatus(statusEl, 'Calling ' + methodName + '...', 'info');
+      hideStatus(resultEl);
+
+      try {
+        const result = await callContract('execute', {
+          contract_name: contractName,
+          method_name: methodName,
+          args: Array.from(args),
+        }, false);
+
+        // The execute result is the raw return bytes
+        if (result && result.result) {
+          const bytes = new Uint8Array(result.result);
+          const text = new TextDecoder().decode(bytes);
+          const asHex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+          setStatus(statusEl, 'Executed successfully (' + (viewCall ? 'view' : 'state-changing') + ')', 'ok');
+          resultEl.textContent = 'Return bytes (hex): ' + asHex + '\nReturn text: ' + text;
+        } else {
+          setStatus(statusEl, 'Executed successfully', 'ok');
+          resultEl.textContent = JSON.stringify(result, null, 2);
+        }
+        resultEl.style.display = 'block';
+      } catch (err) {
+        console.error(err);
+        setStatus(statusEl, 'Execution failed: ' + err.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function readState() {
+      const contractName = document.getElementById('stateContract').value;
+      const key = document.getElementById('stateKey').value;
+
+      stateBtn.disabled = true;
+      setStatus(stateStatus, 'Reading state...', 'info');
+      hideStatus(stateResult);
+
+      try {
+        const result = await callContract('get_state', {
+          contract_name: contractName,
+          key: key,
+        }, true);
+
+        if (result && result.result) {
+          const bytes = new Uint8Array(result.result);
+          const text = new TextDecoder().decode(bytes);
+          setStatus(stateStatus, 'State read successfully', 'ok');
+          stateResult.textContent = 'Key: ' + key + '\nValue (hex): ' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ') + '\nValue (text): ' + text;
+        } else {
+          setStatus(stateStatus, 'No state found for key', 'warn');
+          stateResult.textContent = 'No value stored for key "' + key + '"';
+        }
+        stateResult.style.display = 'block';
+      } catch (err) {
+        console.error(err);
+        setStatus(stateStatus, 'Read failed: ' + err.message, 'err');
+      } finally {
+        stateBtn.disabled = false;
+      }
+    }
+
+    document.getElementById('deployBtn').addEventListener('click', deployContract);
+    document.getElementById('execBtn').addEventListener('click', () => executeContract(false));
+    document.getElementById('viewBtn').addEventListener('click', () => executeContract(true));
+    document.getElementById('stateBtn').addEventListener('click', readState);
+
+    function loadExample(name) {
+      const examples = {
+        counter: `contract Counter {
+  invariant count >= 0;
+  state { count: u64 }
+  fn increment() -> u64 { count = count + 1; count; }
+  fn get() -> u64 { count; }
+}`,
+        escrow: `contract Escrow {
+  invariant balance >= 0;
+  invariant locked + released == total_deposited;
+  state {
+    balance: u64,
+    locked: u64,
+    released: u64,
+    total_deposited: u64
+  }
+  fn deposit(amount: u64) -> u64 {
+    let new_balance = balance + amount;
+    let new_locked = locked + amount;
+    let new_total = total_deposited + amount;
+    balance = new_balance;
+    locked = new_locked;
+    total_deposited = new_total;
+    new_locked;
+  }
+  fn get_balance() -> u64 { balance; }
+}`,
+        bounded: `contract Bounded {
+  invariant count >= 0;
+  invariant count <= 100;
+  state { count: u64 }
+  fn set_count(v: u64) -> u64 { count = v; v; }
+  fn get_count() -> u64 { count; }
+}`,
+      };
+      document.getElementById('deploySource').value = examples[name] || '';
+    }
+  </script>
+</body>
+</html>
