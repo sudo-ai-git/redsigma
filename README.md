@@ -687,15 +687,15 @@ The 231-gate checksums must not be presented as a security mechanism.
   WASM directly. The runtime and verifier now share the same integer semantics
   (per-width/signedness, with `u128`/`i128` declined in both), verified by the
   full test suite.
+- **Redeploy completed.** The borsh-only test contract was redeployed to
+  `redsigma.s03-gate.testnet` (code hash `EruzgySJeZD7UoLHwtZE5usKUpRFzsH4WMVzdSxMqeo3`,
+  639,182 bytes on-chain). The earlier "838,148 bytes ≈ 8.38 NEAR needed,
+  ≈6.16 NEAR shortfall" figures from prior revisions are superseded — the borsh
+  migration reduced the module and the redeploy fits within the account balance.
+  See **NEAR testnet — live** above for the current verified state.
 - `codegen/src/wat.rs` is a real WAT emitter but is reached only by
   `codegen/examples/emit_wat.rs`; it is not on the compile path (the compile
   path now goes through `near_abi::emit_near_module`).
-- **Redeploying the rebuilt test contract is storage-cost blocked**, not broken:
-  with the codegen crates now linked in, the module is 838,148 bytes (≈8.38
-  NEAR to store) against a 2.22 NEAR balance — a ≈6.16 NEAR shortfall. See
-  **NEAR testnet — live** above.
-
-**Not implemented yet:**
 
 - The compiler handles one contract per file; a multi-contract file is
   rejected with the contract names.

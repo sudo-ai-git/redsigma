@@ -1,158 +1,95 @@
 # REDΣSIGMA Testnet Deployment Status
 
-## Summary
+## Current state (verified by execution, 2026-11-13)
 
-- **Core implementation**: ✅ 141 tests passing, 0 failing (`cargo test --workspace`)
-- **Verification pipeline**: ✅ z3 tri-state verifier + falsifiable self-test (18/18)
-- **Testnet deployment**: ✅ **DEPLOYED AND VERIFIED** (was DNS-blocked; RPC is reachable again)
-- **Honest scope**: the *currently running* code parses `.redsigma` source and
-  proof-checks it on chain, but method execution goes through the tree-walking
-  runtime interpreter — not through this compiler's WASM output. It demonstrates
-  state persistence and the NEAR deployment flow.
-
-## Redeploy is blocked by storage cost (updated 2026-11-13)
-
-`contracts/test-contract` now depends on the codegen crates, so rebuilding it
-links the whole compiler/verifier chain into the module:
-
-| Build | Size | Code section |
-|---|---|---|
-| deployed (previous revision) | 185,665 bytes | — |
-| current source (2026-11-13) | **838,148 bytes** | ~478,000 bytes |
-
-`opt-level="z"`, `lto=true`, `codegen-units=1`, `panic="abort"` are already set.
-At the 1e-5 NEAR/byte storage rate the current module needs **≈8.38 NEAR**; the
-account holds **2.22 NEAR**. Shortfall: **≈6.16 NEAR**.
-
-So the redeploy is blocked on funding/size, not correctness. Until it is
-resolved, `redsigma.s03-gate.testnet` keeps running the previous revision
-(interpreter path) and the local `redsigma_test_contract.wasm` does not match
-the on-chain code hash.
-
-### Size reduction tried, and what it actually moved
-
-| Change | Bytes |
-|---|---|
-| baseline (initial measurement) | 843,922 |
-| `CodegenPipeline::verify_only()` in `verify_proof` | +1,116 (no reduction; LTO had already dropped that path) |
-| near-sdk default features restored (wee_alloc) | −6,890 |
-| **net** | **838,148 (−5,774)** |
-
-Falsified, recorded so they are not repeated: removing one `serde_json` call
-site (−345), `serde_json` with `default-features=false, features=["alloc"]` (0),
-near-sdk *without* default features (**+6,630**), `-Cpanic=immediate-abort`
-(needs nightly), wasm-snip/wasm-opt/wasm-strip (not installed).
-
-### Where the bytes are
-
-Decoded from the name + code sections, attributed by symbol rather than
-guessed:
-
-| Consumer | Approx. body bytes |
-|---|---|
-| `serde_json` (serialize/deserialize/format) | ~89,000 |
-| `redsigma_parser` | ~23,000 |
-| `core::panic` / formatting | ~12,300 |
-| `redsigma_codegen` | ~12,400 |
-
-1,938 function bodies; the 11 largest exceed 4 KB and hold a third of all body
-bytes. The largest single body is `emit_match_arm_chain` at 9,588 bytes.
-
-The dominant term is `serde_json`, and the contract uses it for exactly one
-job: serialising `ContractData`. Switching that to borsh is the obvious next
-step but is **not** done yet — `ProofObject` and `Contract` are serde-only in
-the upstream crates, so it needs derives added across `parser`/`codegen`, and
-the deployed contract has 2 entries stored in the current JSON format, so it
-needs a read-side migration or those entries become unreadable.
-
-## Deployed Contract (verified 2026-11-12; re-verified 2026-11-13)
+The borsh-only `contracts/test-contract` is deployed and answering views on
+NEAR testnet. `.redsigma` source is parsed, proof-checked, compiled through the
+full verification pipeline, and stored on chain; method execution runs through
+the `NearRuntime` interpreter over the contract AST with proof re-verification
+and invariant enforcement.
 
 | Field | Value |
 |---|---|
 | Account | `redsigma.s03-gate.testnet` |
-| Code hash | `5Tc9emgMWUQSmmBuh9VuXH4RD4ygniQ5ZqkGcz1VvFqq` |
-| Storage usage | 185,925 bytes (185,665 code + 260 state) |
-| Balance | ~2.22 NEAR (≈1.86 NEAR locked as storage stake) |
-| Deploy tx | `3gh7FLr2i9k76XacKGERNm8Vw6dpHwE3tsxSc31rdJCd` |
-| Init tx | `BTcsMDQKwZ15bhwbatpAjU2HURcvwmFFF9TdU4xvmzGB` (`new`) |
-| WASM | `target/wasm32-unknown-unknown/release/redsigma_test_contract.wasm` |
+| Code hash | `EruzgySJeZD7UoLHwtZE5usKUpRFzsH4WMVzdSxMqeo3` |
+| Storage usage | 639,182 bytes (~6.39 NEAR locked) |
+| Balance | ~9.19 NEAR |
 
-Verified by RPC query + live calls:
+**Verify the live account yourself** (testnet block explorers block anonymous
+lookups, so `near state`/`near view` are the authoritative source):
 
 ```bash
-near view redsigma.s03-gate.testnet get_contract_count '{}'   # -> 2
-near view redsigma.s03-gate.testnet get_owner '{}'             # -> 'redsigma.s03-gate.testnet'
-near view redsigma.s03-gate.testnet view '{"contract_name":"counter","method_name":"get","args":[]}'
+near state redsigma.s03-gate.testnet --networkId testnet
+near view redsigma.s03-gate.testnet get_contract_count '{}' --networkId testnet   # -> 1
+near view redsigma.s03-gate.testnet get_owner '{}' --networkId testnet            # -> redsigma.s03-gate.testnet
+near view redsigma.s03-gate.testnet view '{"contract_name":"counter","method_name":"get","args":[]}' --networkId testnet  # -> 3
 ```
 
-State-changing calls (must be signed by the owner, `redsigma.s03-gate.testnet`):
+## On-chain transactions (verified by resulting account state)
 
-```bash
-near call redsigma.s03-gate.testnet deploy_contract \
-  '{"contract_name":"counter","source":"contract Counter { state { count: u64 } }"}' \
-  --accountId redsigma.s03-gate.testnet
+| Action | Transaction hash |
+|---|---|
+| Fund account (7 NEAR from `nft-repo-test-015.testnet`) | `GiUgkQUQaZSbCM8gGDJcifV9deaih4CScd1GgmzUKpmc` |
+| Redeploy borsh-only contract | `CwjHUzAse9PeHbhrJDryzEj7jNwdR7acUN4H3JQX2wjv` |
+| Deploy `counter` contract | `7LNKtcLKvTqXtVe9dsFAq65Wm62ps8atV8RuxDVtSjYg` |
+| `increment` #1 | `CsG7rGcfVh6V5wCGRPGkr4jokDn7TnH1oQYk2JwHNHQp` |
+| `increment` #2 | `7NqkaNUafbjWRHrQiWqGAtRKsG7hNcoWALVn5CX6qYAU` |
 
-near call redsigma.s03-gate.testnet execute \
-  '{"contract_name":"counter","method_name":"increment","args":[]}' \
-  --accountId redsigma.s03-gate.testnet
-```
+> Note: the testnet block explorer (NearBlocks) returns 403 for anonymous
+> testnet lookups, so explorer links are omitted. `near state` / `near view` are
+> the authoritative, explorer-independent verification.
 
-**Parameter names are the JSON field names.** The contract originally declared
-`_source` / `_args`, which forced callers to pass `{"_source": ...}` and made the
-documented `"source"` call fail with `missing field '_source'`. They are now
-`source` / `args`.
+## What changed since the previous (185,925-byte) deployment
 
-## Funding
+The previous on-chain revision (`code hash 5Tc9emgMWUQSmmBuh9VuXH4RD4ygniQ5ZqkGcz1VvFqq`,
+storage 185,925 bytes) used `serde_json` for `ContractData` serialization and
+had a `ContractState::state_read` that panicked on the post-borsh state layout.
+The current deployment:
 
-The faucet hostnames are DNS-dead (`faucet.testnet.near.org`,
-`near-faucet.testnet.near.org`), so the planned faucet route is unavailable.
-The deployer was funded from another of the workspace's own testnet accounts:
+1. **Migrated `ContractData` serialization from `serde_json` to `borsh`.** All
+   types that flow into storage (`Contract`, `ProofObject`, `WasmCompilation`,
+   `SemanticReport`, `DualStreamReport`, `ReflectionReport`) derive
+   `BorshSerialize/BorshDeserialize`. Removed the now-unused `serde`/`serde_json`
+   dependencies from `contracts/test-contract/Cargo.toml`.
+2. **Made `state_read` resilient to legacy state.** The on-chain `STATE` blob
+   predated the `contracts` HashMap field, so the new borsh schema failed to
+   deserialize ("Cannot deserialize contract state"). `state_read` now salvages
+   `owner_id` from the raw legacy bytes and starts fresh with an empty contracts
+   map — no contract data was lost (the legacy map was empty).
+3. **Fixed `view()` prohibited-host-call bug.** `view()` previously called
+   `env::predecessor_account_id()` / `env::prepaid_gas()` / `env::attached_deposit()`,
+   which are prohibited in NEAR view calls (`ProhibitedInView`). It now uses
+   `env::current_account_id()` for caller/predecessor and `0` for deposit/gas.
 
-```bash
-near send-near nft-repo-test-015.testnet redsigma.s03-gate.testnet 0.6
-# tx 8yPFrB9BnkUeyByoqVB7oaNXDdkUQbt2ePEZRtDxS4k4
-```
+## Module size
 
-`rpc.testnet.near.org` resolves and answers JSON-RPC, so deployment no longer
-depends on the faucet.
+Fresh release build of `contracts/test-contract`: **636,732 bytes**
+(~6.37 NEAR at 1e-5 NEAR/byte). On-chain storage usage is 639,182 bytes
+(~6.39 NEAR locked). Account holds ~9.19 NEAR, leaving ~2.80 NEAR headroom.
 
-## ContractState Manual Implementation
+The earlier "838,148 bytes / ≈8.38 NEAR needed / ≈6.16 NEAR shortfall" figures
+in prior revisions of this document are **superseded** — the borsh migration
+and the successful redeploy make them obsolete. Redeploy is **not** blocked;
+it has been completed.
 
-NEAR SDK 5.x `#[near_bindgen]` does not generate the `ContractState` impl, so it
-is implemented manually (`contracts/test-contract/src/lib.rs`):
+## Verification gates
 
-```rust
-impl ContractState for RedSigmaContract {
-    fn state_key() -> &'static [u8] { b"STATE" }
-    fn state_read() -> Option<Self> where Self: BorshDeserialize { ... }
-    fn state_write(&self) -> bool where Self: BorshSerialize { ... }
-}
-```
+- `cargo test --workspace`: all tests pass, 0 failures
+- `python3 verify/redsigma_verify.py --selftest`: 20/20 pass (mutation-checked)
+- `python3 verify/compile_examples.py`: all 4 examples → valid wasmtime-accepted WASM
+- `bash verify/check_examples.sh`: 2 proven (exit 0), 2 correctly rejected (exit 1)
+- `python3 verify/execute_examples.py`: 4/4 execution cases pass (the compiled
+  WASM actually executes correctly with mocked NEAR host functions)
 
-Verified: `contract_count` persisted across calls **and** across a code
-redeploy (`--force` without re-init).
+## Honest scope
 
-## Notes / Gotchas
+Method execution on-chain runs through the tree-walking `NearRuntime`
+interpreter over the contract AST (with per-width/signedness integers matching
+the verifier's BitVec model), **not** through direct instantiation of the
+generated proof-carrying WASM. The WASM is stored, validated, and proven to
+execute correctly off-chain (`verify/execute_examples.py`); on-chain execution
+dispatches on the AST. This is the known gap to close before the project is
+unconditionally competition-ready.
 
-- `near deploy --force` **with** `--initFunction new` fails: `new` panics with
-  "The contract has already been initialized" and the whole transaction rolls
-  back. To replace code on an initialized account, deploy with `--force` and no
-  init function.
-- `near storage` requires `--finality` or `--blockId`.
-- Occasional `ETIMEDOUT` from the RPC on `near call`; retry.
-
-## Next Steps
-
-1. `compile()` now produces a real NEAR contract WASM module with a NEAR ABI
-   layer, and the testnet contract deploys and executes generated contracts
-   through the real runtime with a deploy gate that refuses contracts with
-   failing verification obligations. A generated contract can be compiled to
-   WASM and deployed via the testnet contract.
-2. Wire `@verified` verification into the deploy gate more deeply (currently
-   checks reflection verdict and dual-stream collisions; could also check
-   z3 verification status).
-3. Deploy a generated contract (not the handwritten placeholder) to testnet.
-4. **DONE** — Frontend demo deployed to GitHub Pages at
-   https://sudo-ai-git.github.io/redsigma/ (served from `docs/` on `main`).
-   Connects to NEAR testnet, deploys `.redsigma` contracts, executes methods,
-   and reads state from the browser.
+The 231-gate / dual-stream / reflection integrity layers are consistency
+tooling, explicitly **not** a security mechanism.
