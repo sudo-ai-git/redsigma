@@ -362,6 +362,43 @@ impl CodegenPipeline {
         }
     }
 
+    /// Re-derive the verification reports for a contract, without lowering or
+    /// assembling anything.
+    ///
+    /// Callers that only need to *check* a proof — `NearRuntime::verify_proof`
+    /// being the case that matters — must use this rather than `compile()`.
+    /// `compile()` also lowers WAT and assembles WASM, which drags the whole
+    /// codegen backend into any binary that links the verifier; in a NEAR
+    /// contract that difference is hundreds of kilobytes of module size.
+    ///
+    /// The reports are byte-for-byte what `compile()` puts in the proof, so a
+    /// signature produced by either path compares equal.
+    pub fn verify_only(&mut self, contract: &Contract) -> Result<ProofObject, CodegenError> {
+        let sem_report = self.semantic_analyzer.analyze(contract)?;
+        let ds_report = self.dual_stream_analyzer.analyze(contract)?;
+        let refl_report = self.reflection_engine.reflect(contract)?;
+        let gate231 = gate231_checksum(contract);
+
+        let _ = self.causal_memory.record_transition(
+            &contract.name,
+            "deploy",
+            0,
+            ds_report.joint_signature,
+            gate231,
+            0,
+            None,
+        );
+
+        Ok(ProofObject {
+            contract_name: contract.name.clone(),
+            semantic_report: sem_report,
+            dual_stream_report: ds_report,
+            reflection_report: refl_report,
+            gate231_checksum: gate231,
+            causal_root: self.causal_memory.len() as u64,
+        })
+    }
+
     /// Compile a contract to WASM with proof objects
     pub fn compile(&mut self, contract: &Contract) -> Result<WasmCompilation, CodegenError> {
         // Run verification pipeline

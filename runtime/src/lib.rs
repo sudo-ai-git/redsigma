@@ -1232,26 +1232,31 @@ impl NearRuntime {
 
         // Re-run the verification pipeline independently and compare the
         // signatures rather than the recorded pass flags.
+        //
+        // `verify_only`, not `compile`: this call only needs the three reports,
+        // and `compile` would additionally lower WAT and assemble WASM. Using
+        // `compile` here dragged the whole codegen backend into the runtime
+        // binary — in the NEAR contract build that is most of the module size.
         let mut pipeline = CodegenPipeline::new();
         let rederived = pipeline
-            .compile(contract)
-            .map_err(|e| RuntimeError::VerificationFailed(format!("re-derivation failed: {}", e)))?;
+            .verify_only(contract)
+            .map_err(|e| RuntimeError::VerificationFailed(format!("re-derivation failed: {e}")))?;
 
-        if rederived.proof.semantic_report.semantic_signature
+        if rederived.semantic_report.semantic_signature
             != proof.semantic_report.semantic_signature
         {
             return Err(RuntimeError::VerificationFailed(
                 "semantic signature mismatch after re-derivation".to_string(),
             ));
         }
-        if rederived.proof.dual_stream_report.joint_signature
+        if rederived.dual_stream_report.joint_signature
             != proof.dual_stream_report.joint_signature
         {
             return Err(RuntimeError::VerificationFailed(
                 "dual-stream joint signature mismatch after re-derivation".to_string(),
             ));
         }
-        if rederived.proof.reflection_report.overall_passed != proof.reflection_report.overall_passed {
+        if rederived.reflection_report.overall_passed != proof.reflection_report.overall_passed {
             return Err(RuntimeError::VerificationFailed(
                 "reflection verdict changed on re-derivation".to_string(),
             ));
@@ -1259,12 +1264,12 @@ impl NearRuntime {
 
         // The re-derived pipeline must itself pass; a proof asserting a failing
         // verdict is not a verification.
-        if !rederived.proof.reflection_report.overall_passed {
+        if !rederived.reflection_report.overall_passed {
             return Err(RuntimeError::VerificationFailed(
                 "Reflection verification failed".to_string(),
             ));
         }
-        if rederived.proof.dual_stream_report.collisions > 0 {
+        if rederived.dual_stream_report.collisions > 0 {
             return Err(RuntimeError::VerificationFailed(
                 "Dual-stream collision detected".to_string(),
             ));
