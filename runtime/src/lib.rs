@@ -84,7 +84,14 @@ pub struct ExecutionContext {
 pub struct DeployedContract {
     /// Contract account ID
     pub account_id: AccountId,
-    /// WASM bytecode
+    /// WASM bytecode produced by the codegen pipeline.
+    ///
+    /// **Carried and stored, never executed.** There is no WASM instantiation
+    /// anywhere in this crate — `execute()` runs the tree-walking interpreter
+    /// over `contract` (the AST), so this field is inert payload. It is
+    /// non-empty (asserted in tests) and costs real storage when a
+    /// `DeployedContract` is serialised, so it must not be described as the
+    /// execution artifact.
     pub wasm_bytecode: Vec<u8>,
     /// Proof object
     pub proof: ProofObject,
