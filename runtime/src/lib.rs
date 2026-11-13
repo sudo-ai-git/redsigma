@@ -16,6 +16,7 @@ use redsigma_reflection::{ReflectionEngine, ReflectionReport};
 use redsigma_causal::CausalMemory;
 use redsigma_codegen::{CodegenPipeline, WasmCompilation, ProofObject, gate231_checksum};
 use serde::{Deserialize, Serialize};
+use borsh::{BorshSerialize, BorshDeserialize};
 use thiserror::Error;
 use std::collections::HashMap;
 
@@ -38,7 +39,7 @@ pub enum RuntimeError {
 }
 
 /// NEAR account ID
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct AccountId(pub String);
 
 impl AccountId {
@@ -52,14 +53,14 @@ impl AccountId {
 }
 
 /// Contract state key
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct StateKey(pub Vec<u8>);
 
 /// Contract state value
 pub type StateValue = Vec<u8>;
 
 /// Execution context for a contract call
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct ExecutionContext {
     /// Contract account ID
     pub contract_id: AccountId,
@@ -80,7 +81,7 @@ pub struct ExecutionContext {
 }
 
 /// Contract deployment info
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct DeployedContract {
     /// Contract account ID
     pub account_id: AccountId,
@@ -107,7 +108,7 @@ pub struct DeployedContract {
 }
 
 /// Gas costs for operations
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct GasCosts {
     pub base: u64,
     pub storage_read: u64,

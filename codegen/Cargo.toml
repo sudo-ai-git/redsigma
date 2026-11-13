@@ -12,6 +12,7 @@ redsigma-dualstream = { path = "../dualstream" }
 redsigma-reflection = { path = "../reflection" }
 redsigma-causal = { path = "../causal" }
 serde = { workspace = true }
+borsh = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }

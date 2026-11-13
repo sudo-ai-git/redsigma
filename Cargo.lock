@@ -1854,6 +1854,7 @@ name = "redsigma-codegen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "borsh",
  "redsigma-causal",
  "redsigma-dualstream",
  "redsigma-parser",
@@ -1888,6 +1889,7 @@ name = "redsigma-dualstream"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "borsh",
  "redsigma-parser",
  "redsigma-semantic",
  "serde",
@@ -1907,6 +1909,7 @@ dependencies = [
 name = "redsigma-parser"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "indexmap 2.14.2",
  "redsigma-causal",
  "redsigma-codegen",
@@ -1934,6 +1937,7 @@ name = "redsigma-reflection"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "borsh",
  "redsigma-causal",
  "redsigma-dualstream",
  "redsigma-parser",
@@ -1948,6 +1952,7 @@ name = "redsigma-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "borsh",
  "redsigma-causal",
  "redsigma-codegen",
  "redsigma-dualstream",
@@ -1964,6 +1969,7 @@ name = "redsigma-semantic"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "borsh",
  "indexmap 2.14.2",
  "redsigma-parser",
  "serde",
@@ -1995,8 +2001,6 @@ dependencies = [
  "redsigma-reflection",
  "redsigma-runtime",
  "redsigma-semantic",
- "serde",
- "serde_json",
 ]
 
 [[package]]

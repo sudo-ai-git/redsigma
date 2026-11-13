@@ -6,6 +6,7 @@
 use redsigma_parser::{Contract, Expr, Stmt};
 use redsigma_semantic::SemanticAnalyzer;
 use serde::{Deserialize, Serialize};
+use borsh::{BorshSerialize, BorshDeserialize};
 use thiserror::Error;
 use std::collections::HashMap;
 
@@ -33,7 +34,7 @@ impl From<redsigma_semantic::SemanticError> for DualStreamError {
 
 /// Mod-5 Semantic Channel (5 buckets)
 /// B0: residue 0, B1: residue 1, B2: residue 2, B3: residue 3, B4: residue 4
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct Mod5Semantic {
     pub buckets: [u64; 5],
     pub total: u64,
@@ -96,7 +97,7 @@ impl Default for Mod5Semantic {
 
 /// Mod-37/73 Structural Channel (4 channels)
 /// LIN37, LIN73, SUM231, PROD231
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct Mod3773Structural {
     pub lin37: u64,
     pub lin73: u64,
@@ -169,7 +170,7 @@ impl Default for Mod3773Structural {
 }
 
 /// Dual-Stream projection combining Mod-5 semantic + Mod-37/73 structural
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct DualStream {
     pub semantic: Mod5Semantic,
     pub structural: Mod3773Structural,
@@ -469,7 +470,7 @@ impl Default for DualStreamAnalyzer {
 }
 
 /// Report from dual-stream analysis
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct DualStreamReport {
     pub contract_name: String,
     pub joint_signature: u64,

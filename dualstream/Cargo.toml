@@ -9,6 +9,7 @@ license = "MIT"
 redsigma-parser = { path = "../parser" }
 redsigma-semantic = { path = "../semantic" }
 serde = { workspace = true }
+borsh = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }

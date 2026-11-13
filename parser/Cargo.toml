@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 serde = { workspace = true }
+borsh = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 indexmap = { workspace = true }

@@ -16,6 +16,4 @@ redsigma-dualstream = { path = "../../dualstream" }
 redsigma-reflection = { path = "../../reflection" }
 redsigma-causal = { path = "../../causal" }
 redsigma-codegen = { path = "../../codegen" }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 borsh = { version = "1.2", features = ["derive"] }

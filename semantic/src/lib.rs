@@ -6,6 +6,7 @@
 use std::hash::Hasher;
 use redsigma_parser::{Contract, Expr, Stmt};
 use serde::{Deserialize, Serialize};
+use borsh::{BorshSerialize, BorshDeserialize};
 use thiserror::Error;
 use indexmap::IndexMap;
 
@@ -23,7 +24,7 @@ pub enum SemanticError {
 
 /// 5-bucket SemanticSpace projection using Mod-5 arithmetic
 /// Based on Tanakh 231-gate framework: Mod-5 semantic channel
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct SemanticSpace {
     /// 5 buckets representing semantic residue classes modulo 5
     pub buckets: [u64; 5],
@@ -560,7 +561,7 @@ impl Default for SemanticAnalyzer {
 }
 
 /// Report from semantic analysis
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct SemanticReport {
     pub contract_name: String,
     pub input_hash: u64,

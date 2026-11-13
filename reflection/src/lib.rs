@@ -13,6 +13,7 @@ use redsigma_semantic::{SemanticAnalyzer, SemanticReport};
 use redsigma_dualstream::{DualStreamAnalyzer, DualStreamReport};
 use redsigma_causal::CausalMemory;
 use serde::{Deserialize, Serialize};
+use borsh::{BorshSerialize, BorshDeserialize};
 use thiserror::Error;
 use std::collections::HashMap;
 
@@ -51,7 +52,7 @@ impl From<redsigma_dualstream::DualStreamError> for ReflectionError {
 }
 
 /// Result of a single reflection layer
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct LayerResult {
     pub layer: u8,
     pub name: String,
@@ -62,7 +63,7 @@ pub struct LayerResult {
 }
 
 /// Full reflection report across all 6 layers
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct ReflectionReport {
     pub contract_name: String,
     pub layers: Vec<LayerResult>,

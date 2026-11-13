@@ -5,6 +5,7 @@
 //! state declarations, invariants, and verified annotations.
 
 use serde::{Deserialize, Serialize};
+use borsh::{BorshSerialize, BorshDeserialize};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -29,7 +30,7 @@ pub enum ParseError {
     Other(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct Contract {
     pub name: String,
     pub invariants: Vec<Invariant>,
@@ -37,7 +38,7 @@ pub struct Contract {
     pub functions: Vec<Function>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct Invariant {
     /// The parsed invariant expression. It used to be stored as
     /// `format!("{:?}", expr)` — a Rust debug string that no verifier could
@@ -46,18 +47,18 @@ pub struct Invariant {
     pub expr: Expr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct StateDecl {
     pub fields: Vec<(String, Type)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct Type {
     pub name: String,
     pub generics: Vec<Type>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct Function {
     pub name: String,
     pub verified: Option<VerifiedAnnotation>,
@@ -67,7 +68,7 @@ pub struct Function {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct VerifiedAnnotation {
     /// `pre:` — must hold before the call. Parsed, not a string, so a verifier
     /// can actually reason about it.
@@ -79,7 +80,7 @@ pub struct VerifiedAnnotation {
     pub invariant: Option<Expr>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum Stmt {
     Let {
         mutable: bool,
@@ -116,7 +117,7 @@ pub enum Stmt {
     Continue,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum Expr {
     Number(String),
     String(String),
@@ -170,7 +171,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum BinOp {
     Add,
     Sub,
@@ -197,7 +198,7 @@ pub enum BinOp {
     Assign,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum UnOp {
     Not,
     Neg,

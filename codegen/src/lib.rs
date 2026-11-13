@@ -9,6 +9,7 @@ use redsigma_dualstream::{DualStreamAnalyzer, DualStreamReport};
 use redsigma_reflection::{ReflectionEngine, ReflectionReport};
 use redsigma_causal::CausalMemory;
 use serde::{Deserialize, Serialize};
+use borsh::{BorshSerialize, BorshDeserialize};
 use thiserror::Error;
 use std::collections::HashMap;
 
@@ -57,7 +58,7 @@ impl From<redsigma_reflection::ReflectionError> for CodegenError {
 }
 
 /// Proof object embedded in WASM
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct ProofObject {
     /// Contract name
     pub contract_name: String,
@@ -74,7 +75,7 @@ pub struct ProofObject {
 }
 
 /// WASM compilation result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct WasmCompilation {
     /// WASM bytecode (simplified - just placeholder)
     pub bytecode: Vec<u8>,

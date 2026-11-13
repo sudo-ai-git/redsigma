@@ -8,24 +8,23 @@
 
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::state::ContractState;
-use near_sdk::{env, near_bindgen, AccountId, Gas};
+use near_sdk::{env, near_bindgen, AccountId};
 use redsigma_codegen::{CodegenPipeline, ProofObject};
 use redsigma_parser::{Contract, Parser};
 use redsigma_runtime::{
     AccountId as RuntimeAccountId, DeployedContract, ExecutionContext, NearRuntime,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-type StateKey = redsigma_runtime::StateKey;
 type StateValue = redsigma_runtime::StateValue;
 
 /// Serialized contract data stored in NEAR storage per deployed contract.
-/// All fields implement serde::Serialize/Deserialize, so we serialize with
-/// serde_json to Vec<u8> for storage.
+/// Serialized with BORSH (not serde_json): borsh is what the NEAR SDK uses
+/// natively, and it avoids linking the JSON serializer into the contract,
+/// which was a measurable share of the module size.
 /// State is keyed by field name (String) rather than StateKey (Vec<u8>)
 /// because JSON object keys must be strings.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
 struct ContractData {
     wasm_bytecode: Vec<u8>,
     proof: ProofObject,
@@ -41,7 +40,7 @@ struct ContractData {
 pub struct RedSigmaContract {
     owner_id: AccountId,
     contract_count: u32,
-    /// contract_name -> serde_json-serialized ContractData
+    /// contract_name -> borsh-serialized ContractData
     contracts: HashMap<String, Vec<u8>>,
 }
 
@@ -56,8 +55,34 @@ impl ContractState for RedSigmaContract {
         Self: BorshDeserialize,
     {
         env::storage_read(Self::state_key()).map(|data| {
-            borsh::from_slice(&data)
-                .unwrap_or_else(|_| env::panic_str("Cannot deserialize contract state."))
+            match borsh::from_slice(&data) {
+                Ok(contract) => contract,
+                // Legacy state (pre-borsh-migration) predates the `contracts`
+                // HashMap field: it holds owner_id (u32 len + UTF-8) followed by
+                // contract_count (u32), then ends. Salvage the owner_id and
+                // start fresh with an empty contracts map so the contract keeps
+                // working after the redeploy. No contract data is lost — the
+                // legacy map was empty (contract_count was a stale counter).
+                Err(_) => {
+                    let owner_id = if data.len() > 4 {
+                        let len = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0; 4])) as usize;
+                        if 4 + len <= data.len() {
+                            String::from_utf8_lossy(&data[4..4 + len]).into_owned()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+                    RedSigmaContract {
+                        owner_id: owner_id
+                            .parse::<near_sdk::AccountId>()
+                            .unwrap_or_else(|_| env::current_account_id()),
+                        contract_count: 0,
+                        contracts: HashMap::new(),
+                    }
+                }
+            }
         })
     }
 
@@ -146,7 +171,7 @@ impl RedSigmaContract {
         };
 
         let serialized =
-            serde_json::to_vec(&data).map_err(|e| format!("Serialization error: {}", e))?;
+            borsh::to_vec(&data).map_err(|e| format!("Serialization error: {}", e))?;
         self.contracts.insert(contract_name.clone(), serialized);
         self.contract_count += 1;
 
@@ -172,7 +197,7 @@ impl RedSigmaContract {
             .get(&contract_name)
             .ok_or_else(|| format!("Contract '{}' not found", contract_name))?;
         let data: ContractData =
-            serde_json::from_slice(serialized).map_err(|e| format!("Deserialization error: {}", e))?;
+            borsh::from_slice(serialized).map_err(|e| format!("Deserialization error: {}", e))?;
 
         // Build a runtime and insert the stored contract.
         // Convert state from String-keyed (JSON) to StateKey-keyed (runtime).
@@ -221,7 +246,7 @@ impl RedSigmaContract {
         let updated = runtime
             .get_contract(&RuntimeAccountId::new(contract_name.clone()))
             .ok_or_else(|| "Contract not found after execution".to_string())?;
-        let mut data = serde_json::from_slice::<ContractData>(serialized)
+        let mut data = borsh::from_slice::<ContractData>(serialized)
             .map_err(|e| format!("Deserialization error: {}", e))?;
         data.state = updated
             .state
@@ -229,7 +254,7 @@ impl RedSigmaContract {
             .map(|(k, v)| (String::from_utf8(k.0.clone()).unwrap_or_default(), v.clone()))
             .collect();
         let reserialized =
-            serde_json::to_vec(&data).map_err(|e| format!("Serialization error: {}", e))?;
+            borsh::to_vec(&data).map_err(|e| format!("Serialization error: {}", e))?;
         self.contracts.insert(contract_name, reserialized);
 
         Ok(result)
@@ -248,7 +273,7 @@ impl RedSigmaContract {
             .get(&contract_name)
             .ok_or_else(|| format!("Contract '{}' not found", contract_name))?;
         let data: ContractData =
-            serde_json::from_slice(serialized).map_err(|e| format!("Deserialization error: {}", e))?;
+            borsh::from_slice(serialized).map_err(|e| format!("Deserialization error: {}", e))?;
 
         let mut runtime = NearRuntime::new();
         let account_id = RuntimeAccountId::new(contract_name.clone());
@@ -271,10 +296,14 @@ impl RedSigmaContract {
 
         let context = ExecutionContext {
             contract_id: RuntimeAccountId::new(contract_name.clone()),
-            caller_id: RuntimeAccountId::new(env::predecessor_account_id().to_string()),
-            predecessor_id: RuntimeAccountId::new(env::predecessor_account_id().to_string()),
-            attached_deposit: env::attached_deposit().as_yoctonear(),
-            prepaid_gas: env::prepaid_gas().as_gas(),
+            // A view call has no real caller/predecessor (predecessor_account_id()
+            // is prohibited in views). Use the contract's own account ID for both
+            // so the runtime has a valid context without touching host calls that
+            // are disallowed in view mode.
+            caller_id: RuntimeAccountId::new(env::current_account_id().to_string()),
+            predecessor_id: RuntimeAccountId::new(env::current_account_id().to_string()),
+            attached_deposit: 0,
+            prepaid_gas: 0,
             block_height: env::block_height(),
             block_timestamp: env::block_timestamp(),
             random_seed: env::random_seed(),

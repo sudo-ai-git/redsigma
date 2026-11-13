@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 redsigma-parser = { path = "../parser" }
 serde = { workspace = true }
+borsh = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
