@@ -1,0 +1,24 @@
+// REDΣSIGMA example: a postcondition that DOES NOT hold.
+//
+// The body adds `amount + 1` but the postcondition claims it added `amount`.
+// The verifier must report Counterexample and show a concrete input.
+//
+//   verify/verify.sh examples/counterexample.redsigma   # exits 1
+
+contract Vault {
+    invariant balance >= 0;
+
+    state {
+        balance: u64,
+    }
+
+    @verified(
+        pre: amount > 0,
+        post: balance == old(balance) + amount,
+        invariant: balance >= 0
+    )
+    fn deposit(amount: u64) -> u64 {
+        balance = balance + amount + 1;
+        balance;
+    }
+}

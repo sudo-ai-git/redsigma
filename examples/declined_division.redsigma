@@ -1,0 +1,26 @@
+// REDΣSIGMA example: a construct the verifier DECLINES.
+//
+// `/` is not modelled: WASM integer division truncates toward zero and has
+// signed-overflow edge cases that z3's BitVec division does not reproduce, so
+// modelling one as the other would produce false proofs. The verifier records
+// the decline and reports the obligations as Unverified — never as Proven.
+//
+//   verify/verify.sh examples/declined_division.redsigma   # exits 1
+
+contract Split {
+    invariant x >= 0;
+
+    state {
+        x: u64,
+    }
+
+    @verified(
+        pre: true,
+        post: x == old(x) / 2,
+        invariant: x >= 0
+    )
+    fn halve() -> u64 {
+        x = x / 2;
+        x;
+    }
+}

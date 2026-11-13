@@ -1,0 +1,25 @@
+// REDΣSIGMA example: unsigned arithmetic.
+//
+// 18446744073709551615 is 2^64 - 1, the largest u64. It is a large POSITIVE
+// number; modelled as i64 it would be -1 and `x > 0` would be refuted. The
+// verifier carries signedness per binding, so this proves.
+//
+//   verify/verify.sh examples/unsigned.redsigma
+
+contract Unsigned {
+    invariant x >= 0;
+
+    state {
+        x: u64,
+    }
+
+    @verified(
+        pre: true,
+        post: x > 0,
+        invariant: x >= 0
+    )
+    fn set_max() -> u64 {
+        x = 18446744073709551615;
+        x;
+    }
+}
