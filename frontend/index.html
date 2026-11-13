@@ -254,7 +254,7 @@
         }
 
         account = wallet.account();
-        const accountId = account.accountId || (await account.getAccountId()).account_id;
+        const accountId = wallet.getAccountId();
 
         connectBtn.style.display = 'none';
         disconnectBtn.style.display = 'inline-block';
