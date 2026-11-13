@@ -9,154 +9,154 @@
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "NEAR Connect + near-api-js mocks ready",
-        "timestamp": "2026-11-13T02:45:22.461432"
+        "timestamp": "2026-11-13T02:58:10.791715"
       },
       {
         "test": "HTML: importmap present",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463058"
+        "timestamp": "2026-11-13T02:58:10.793101"
       },
       {
         "test": "HTML: near-connect esm.sh",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463088"
+        "timestamp": "2026-11-13T02:58:10.793138"
       },
       {
         "test": "HTML: NearConnector imported",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463092"
+        "timestamp": "2026-11-13T02:58:10.793143"
       },
       {
         "test": "HTML: module script",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463097"
+        "timestamp": "2026-11-13T02:58:10.793149"
       },
       {
         "test": "HTML: near-api-js for views",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463101"
+        "timestamp": "2026-11-13T02:58:10.793153"
       },
       {
         "test": "HTML: signAndSendTransaction used",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463105"
+        "timestamp": "2026-11-13T02:58:10.793158"
       },
       {
         "test": "HTML: no requestSignIn redirect",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463109"
+        "timestamp": "2026-11-13T02:58:10.793162"
       },
       {
         "test": "HTML: no helperUrl",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463112"
+        "timestamp": "2026-11-13T02:58:10.793166"
       },
       {
         "test": "HTML: no WalletConnect libs",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463116"
+        "timestamp": "2026-11-13T02:58:10.793170"
       },
       {
         "test": "HTML: no web3.js",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463119"
+        "timestamp": "2026-11-13T02:58:10.793173"
       },
       {
         "test": "NEAR Connect connect()",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "Wallet selector popup returned a wallet",
-        "timestamp": "2026-11-13T02:45:22.463155"
+        "timestamp": "2026-11-13T02:58:10.793205"
       },
       {
         "test": "getAccounts()",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "Account: testnet-user.testnet",
-        "timestamp": "2026-11-13T02:45:22.463160"
+        "timestamp": "2026-11-13T02:58:10.793212"
       },
       {
         "test": "No full-page redirect",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "connect() is popup-based, not window.location",
-        "timestamp": "2026-11-13T02:45:22.463165"
+        "timestamp": "2026-11-13T02:58:10.793216"
       },
       {
         "test": "near-api-js connect (no sign-in)",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "View calls need no auth/redirect",
-        "timestamp": "2026-11-13T02:45:22.463182"
+        "timestamp": "2026-11-13T02:58:10.793235"
       },
       {
         "test": "viewFunction",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "Result: {'result': '2'}",
-        "timestamp": "2026-11-13T02:45:22.463193"
+        "timestamp": "2026-11-13T02:58:10.793248"
       },
       {
         "test": "signAndSendTransaction",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "State-changing call submitted, no redirect",
-        "timestamp": "2026-11-13T02:45:22.463229"
+        "timestamp": "2026-11-13T02:58:10.793287"
       },
       {
         "test": "Transaction hash returned",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "",
-        "timestamp": "2026-11-13T02:45:22.463235"
+        "timestamp": "2026-11-13T02:58:10.793296"
       },
       {
         "test": "Connected wallet required",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "Connection enforced",
-        "timestamp": "2026-11-13T02:45:22.463243"
+        "timestamp": "2026-11-13T02:58:10.793305"
       },
       {
         "test": "Missing fields rejected",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "Detected: Missing fields: ['contract_name', 'source', 'deployer']",
-        "timestamp": "2026-11-13T02:45:22.463257"
+        "timestamp": "2026-11-13T02:58:10.793322"
       },
       {
         "test": "Testnet network enforced",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "testnet only",
-        "timestamp": "2026-11-13T02:45:22.463262"
+        "timestamp": "2026-11-13T02:58:10.793328"
       },
       {
         "test": "Overall error handling",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "3/3",
-        "timestamp": "2026-11-13T02:45:22.463268"
+        "timestamp": "2026-11-13T02:58:10.793336"
       }
     ]
   },

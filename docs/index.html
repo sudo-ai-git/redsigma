@@ -251,12 +251,11 @@
   <script type="module">
     import { NearConnector } from "@hot-labs/near-connect";
 
-    const { connect, keyStores } = window.nearApi || window;
+    const { JsonRpcProvider } = window.nearApi || window;
 
     let connector = null;
     let wallet = null;       // NEAR Connect wallet (state-changing calls)
-    let near = null;         // near-api-js connection (read-only view calls)
-    let nearAccount = null;  // near-api-js account (read-only view calls)
+    let nearRpc = null;      // near-api-js JsonRpcProvider (read-only view calls)
     let contractId = 'redsigma.s03-gate.testnet';
 
     const connectBtn = document.getElementById('connectBtn');
@@ -282,9 +281,12 @@
     // NEAR Connect: opens a wallet selector popup, NOT a full-page redirect.
     async function connectWallet() {
       try {
-        if (!connector) {
-          connector = new NearConnector({ network: 'testnet' });
-        }
+        connector = new NearConnector({
+          network: 'testnet',
+          // To also show WalletConnect-branded wallets in the selector, set a
+          // valid projectId here (get one from https://walletconnect.com).
+          // walletConnect: { projectId: 'YOUR_WALLETCONNECT_PROJECT_ID', ... },
+        });
 
         setStatus(connectionStatus, 'Opening wallet selector...', 'info');
 
@@ -297,19 +299,13 @@
           await wallet.signIn({ contractId, methodNames: ['deploy_contract', 'execute', 'view', 'get_contract_count', 'get_owner'] });
         }
 
-        // near-api-js connection for read-only view calls (no sign-in, no redirect)
-        if (!near) {
-          const keyStore = new keyStores.BrowserLocalStorageKeyStore();
-          near = await connect({
-            networkId: 'testnet',
-            keyStore,
-            nodeUrl: 'https://rpc.testnet.near.org',
-            walletUrl: 'https://wallet.testnet.near.org',
-            explorerUrl: 'https://explorer.testnet.near.org',
-          });
+        // near-api-js JsonRpcProvider for read-only view calls (no sign-in, no redirect).
+        // NEAR Connect does not provide view calls; this is the official pattern.
+        if (!nearRpc) {
+          nearRpc = new JsonRpcProvider({ url: 'https://rpc.testnet.near.org' });
         }
+
         const accountId = accounts[0].accountId;
-        nearAccount = near.account(accountId);
         enableWallet(accountId);
       } catch (err) {
         console.error(err);
@@ -331,7 +327,7 @@
       try {
         if (connector && connector.disconnect) await connector.disconnect();
       } catch (err) { console.error(err); }
-      connector = null; wallet = null; near = null; nearAccount = null;
+      connector = null; wallet = null; nearRpc = null;
 
       connectBtn.style.display = 'inline-block';
       disconnectBtn.style.display = 'none';
@@ -342,7 +338,7 @@
       stateBtn.disabled = true;
     }
 
-    // Auto-connect on page load (restores session without a redirect)
+    // Auto-connect on page load (restores NEAR Connect session — no redirect)
     async function autoConnect() {
       try {
         if (connector) {
@@ -351,18 +347,10 @@
             wallet = walletCheck;
             const accounts = await wallet.getAccounts();
             if (accounts && accounts.length > 0) {
-              if (!near) {
-                const keyStore = new keyStores.BrowserLocalStorageKeyStore();
-                near = await connect({
-                  networkId: 'testnet',
-                  keyStore,
-                  nodeUrl: 'https://rpc.testnet.near.org',
-                  walletUrl: 'https://wallet.testnet.near.org',
-                  explorerUrl: 'https://explorer.testnet.near.org',
-                });
+              if (!nearRpc) {
+                nearRpc = new JsonRpcProvider({ url: 'https://rpc.testnet.near.org' });
               }
               const accountId = accounts[0].accountId;
-              nearAccount = near.account(accountId);
               enableWallet(accountId);
               return;
             }
@@ -383,7 +371,13 @@
     async function callContract(method, args, viewCall = false) {
       const cid = document.getElementById('contractId').value;
       if (viewCall) {
-        return await nearAccount.viewFunction(cid, method, args || {});
+        // Read-only view call via near-api-js JsonRpcProvider.callFunction
+        // (NEAR Connect does not provide view methods — official pattern).
+        return await nearRpc.callFunction({
+          contractId: cid,
+          methodName: method,
+          args: args || {},
+        });
       }
       // State-changing call via NEAR Connect (signAndSendTransaction, no redirect)
       const actionArgs = args || {};
