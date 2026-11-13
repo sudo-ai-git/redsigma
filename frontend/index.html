@@ -202,7 +202,8 @@
 
   <script src="https://cdn.jsdelivr.net/npm/near-api-js@0.44.2/dist/near-api-js.min.js"></script>
   <script>
-    const { connect, keyStores, WalletConnection, utils } = nearApiJs || window;
+    const nearApi = window.nearApi || window;
+    const { connect, keyStores, WalletConnection, utils } = nearApi;
 
     let wallet = null;
     let near = null;
