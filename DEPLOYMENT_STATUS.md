@@ -2,7 +2,7 @@
 
 ## Summary
 
-- **Core implementation**: ✅ 138 tests passing, 0 failing (`cargo test --workspace`)
+- **Core implementation**: ✅ 141 tests passing, 0 failing (`cargo test --workspace`)
 - **Verification pipeline**: ✅ z3 tri-state verifier + falsifiable self-test (18/18)
 - **Testnet deployment**: ✅ **DEPLOYED AND VERIFIED** (was DNS-blocked; RPC is reachable again)
 - **Honest scope**: the *currently running* code parses `.redsigma` source and
@@ -18,16 +18,52 @@ links the whole compiler/verifier chain into the module:
 | Build | Size | Code section |
 |---|---|---|
 | deployed (previous revision) | 185,665 bytes | — |
-| current source | **843,922 bytes** | 477,772 bytes |
+| current source (2026-11-13) | **838,148 bytes** | ~478,000 bytes |
 
 `opt-level="z"`, `lto=true`, `codegen-units=1`, `panic="abort"` are already set.
-At the 1e-5 NEAR/byte storage rate the current module needs **≈8.44 NEAR**; the
-account holds **2.22 NEAR**. Shortfall: **≈6.22 NEAR**.
+At the 1e-5 NEAR/byte storage rate the current module needs **≈8.38 NEAR**; the
+account holds **2.22 NEAR**. Shortfall: **≈6.16 NEAR**.
 
 So the redeploy is blocked on funding/size, not correctness. Until it is
 resolved, `redsigma.s03-gate.testnet` keeps running the previous revision
 (interpreter path) and the local `redsigma_test_contract.wasm` does not match
 the on-chain code hash.
+
+### Size reduction tried, and what it actually moved
+
+| Change | Bytes |
+|---|---|
+| baseline (initial measurement) | 843,922 |
+| `CodegenPipeline::verify_only()` in `verify_proof` | +1,116 (no reduction; LTO had already dropped that path) |
+| near-sdk default features restored (wee_alloc) | −6,890 |
+| **net** | **838,148 (−5,774)** |
+
+Falsified, recorded so they are not repeated: removing one `serde_json` call
+site (−345), `serde_json` with `default-features=false, features=["alloc"]` (0),
+near-sdk *without* default features (**+6,630**), `-Cpanic=immediate-abort`
+(needs nightly), wasm-snip/wasm-opt/wasm-strip (not installed).
+
+### Where the bytes are
+
+Decoded from the name + code sections, attributed by symbol rather than
+guessed:
+
+| Consumer | Approx. body bytes |
+|---|---|
+| `serde_json` (serialize/deserialize/format) | ~89,000 |
+| `redsigma_parser` | ~23,000 |
+| `core::panic` / formatting | ~12,300 |
+| `redsigma_codegen` | ~12,400 |
+
+1,938 function bodies; the 11 largest exceed 4 KB and hold a third of all body
+bytes. The largest single body is `emit_match_arm_chain` at 9,588 bytes.
+
+The dominant term is `serde_json`, and the contract uses it for exactly one
+job: serialising `ContractData`. Switching that to borsh is the obvious next
+step but is **not** done yet — `ProofObject` and `Contract` are serde-only in
+the upstream crates, so it needs derives added across `parser`/`codegen`, and
+the deployed contract has 2 entries stored in the current JSON format, so it
+needs a read-side migration or those entries become unreadable.
 
 ## Deployed Contract (verified 2026-11-12; re-verified 2026-11-13)
 

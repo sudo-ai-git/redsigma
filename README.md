@@ -609,15 +609,23 @@ near call redsigma.s03-gate.testnet execute \
   --accountId redsigma.s03-gate.testnet
 ```
 
-**Redeploying is currently blocked by storage cost, not by correctness.**
+**Redeploying is blocked by storage cost, not by correctness.**
 Rebuilding `contracts/test-contract` now that it depends on the codegen crates
-produces a **843,922-byte** module (477,772 bytes of it in the code section —
-the whole compiler/verifier chain linked in). Storing that costs ≈8.44 NEAR at
+produces a **838,148-byte** module (~478,000 bytes of it in the code section —
+the whole compiler/verifier chain linked in). Storing that costs ≈8.38 NEAR at
 the 1e-5 NEAR/byte rate and the account holds 2.22 NEAR, so a redeploy is
-≈6.22 NEAR short. `opt-level="z"` + `lto=true` are already set; the size is
-the real cost of bundling the compiler into the contract, not a tuning
-problem. Until that is resolved, the deployed contract stays on the
-interpreter path described above.
+≈6.16 NEAR short. `opt-level="z"` + `lto=true` + `wee_alloc` are set; what is
+left is the real cost of bundling the compiler into the contract, not a tuning
+problem. Until it is resolved, the deployed contract stays on the interpreter
+path described above.
+
+Attributed by symbol rather than guessed, the module body bytes are:
+`serde_json` ~89,000, `redsigma_parser` ~23,000, `core::panic`/formatting
+~12,300, `redsigma_codegen` ~12,400. The contract uses `serde_json` for exactly
+one job — serialising `ContractData` — so a borsh switch is the obvious next
+step, but it is not done yet: `ProofObject` and `Contract` are serde-only
+upstream, and the deployed contract holds 2 entries in the current JSON format.
+See DEPLOYMENT_STATUS.md for the full attribution and the attempts that failed.
 
 ---
 
@@ -662,7 +670,7 @@ The 231-gate checksums must not be presented as a security mechanism.
   6-layer reflection, 231-gate checksums.
 - `compile()` produces real, wasmtime-validated WASM from `.redsigma` source
   (all four examples, plus if/while/for/match control flow).
-- `cargo test --workspace`: 138 tests passing across 27 suites.
+- `cargo test --workspace`: 141 tests passing across 28 suites.
 - A NEAR test contract, deployed and exercised on testnet.
 
 **Known divergences (honest limitations):**
@@ -676,8 +684,8 @@ The 231-gate checksums must not be presented as a security mechanism.
   `codegen/examples/emit_wat.rs`; it is not on the compile path (the compile
   path now goes through `near_abi::emit_near_module`).
 - **Redeploying the rebuilt test contract is storage-cost blocked**, not broken:
-  with the codegen crates now linked in, the module is 843,922 bytes (≈8.44
-  NEAR to store) against a 2.22 NEAR balance — a ≈6.22 NEAR shortfall. See
+  with the codegen crates now linked in, the module is 838,148 bytes (≈8.38
+  NEAR to store) against a 2.22 NEAR balance — a ≈6.16 NEAR shortfall. See
   **NEAR testnet — live** above.
 
 **Not implemented yet:**
