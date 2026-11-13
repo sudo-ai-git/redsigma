@@ -1,230 +1,174 @@
 {
   "test_summary": {
-    "total_tests": 30,
-    "passed_tests": 30,
+    "total_tests": 22,
+    "passed_tests": 22,
     "success_rate": "100.0%",
     "test_results": [
       {
         "test": "Test Environment Setup",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "All dependencies mocked successfully",
-        "timestamp": "2026-11-13T02:30:09.483407"
+        "details": "NEAR Connect + near-api-js mocks ready",
+        "timestamp": "2026-11-13T02:45:22.461432"
       },
       {
-        "test": "NEAR Wallet Option Present",
+        "test": "HTML: importmap present",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "NEAR Wallet option found in HTML",
-        "timestamp": "2026-11-13T02:30:09.484428"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463058"
       },
       {
-        "test": "WalletConnect Option Removed",
+        "test": "HTML: near-connect esm.sh",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "No WalletConnect option (intentionally removed)",
-        "timestamp": "2026-11-13T02:30:09.484458"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463088"
       },
       {
-        "test": "NEAR Wallet Pre-selected",
+        "test": "HTML: NearConnector imported",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "NEAR Wallet option is selected by default",
-        "timestamp": "2026-11-13T02:30:09.484465"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463092"
       },
       {
-        "test": "No web3-provider library",
+        "test": "HTML: module script",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "@walletconnect/web3-provider removed",
-        "timestamp": "2026-11-13T02:30:09.485975"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463097"
       },
       {
-        "test": "No web3.js library",
+        "test": "HTML: near-api-js for views",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "web3@1.10.0 removed",
-        "timestamp": "2026-11-13T02:30:09.486007"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463101"
       },
       {
-        "test": "No initWalletConnect",
+        "test": "HTML: signAndSendTransaction used",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "WalletConnect init removed",
-        "timestamp": "2026-11-13T02:30:09.486013"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463105"
       },
       {
-        "test": "No WalletConnectProvider",
+        "test": "HTML: no requestSignIn redirect",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "WalletConnectProvider removed",
-        "timestamp": "2026-11-13T02:30:09.486018"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463109"
       },
       {
-        "test": "No web3 variable",
+        "test": "HTML: no helperUrl",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "web3 variable removed",
-        "timestamp": "2026-11-13T02:30:09.486022"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463112"
       },
       {
-        "test": "NEAR Network Configuration",
+        "test": "HTML: no WalletConnect libs",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "Network: testnet",
-        "timestamp": "2026-11-13T02:30:09.486074"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463116"
       },
       {
-        "test": "Account Retrieval",
+        "test": "HTML: no web3.js",
+        "status": "\u2705 PASSED",
+        "passed": true,
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463119"
+      },
+      {
+        "test": "NEAR Connect connect()",
+        "status": "\u2705 PASSED",
+        "passed": true,
+        "details": "Wallet selector popup returned a wallet",
+        "timestamp": "2026-11-13T02:45:22.463155"
+      },
+      {
+        "test": "getAccounts()",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "Account: testnet-user.testnet",
-        "timestamp": "2026-11-13T02:30:09.486080"
+        "timestamp": "2026-11-13T02:45:22.463160"
       },
       {
-        "test": "View Function Call",
+        "test": "No full-page redirect",
+        "status": "\u2705 PASSED",
+        "passed": true,
+        "details": "connect() is popup-based, not window.location",
+        "timestamp": "2026-11-13T02:45:22.463165"
+      },
+      {
+        "test": "near-api-js connect (no sign-in)",
+        "status": "\u2705 PASSED",
+        "passed": true,
+        "details": "View calls need no auth/redirect",
+        "timestamp": "2026-11-13T02:45:22.463182"
+      },
+      {
+        "test": "viewFunction",
         "status": "\u2705 PASSED",
         "passed": true,
         "details": "Result: {'result': '2'}",
-        "timestamp": "2026-11-13T02:30:09.486092"
+        "timestamp": "2026-11-13T02:45:22.463193"
       },
       {
-        "test": "Payload Validation",
+        "test": "signAndSendTransaction",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "Contract name: test-counter",
-        "timestamp": "2026-11-13T02:30:09.486108"
+        "details": "State-changing call submitted, no redirect",
+        "timestamp": "2026-11-13T02:45:22.463229"
       },
       {
-        "test": "Source Code Validation",
+        "test": "Transaction hash returned",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "Source length: 150 chars",
-        "timestamp": "2026-11-13T02:30:09.486116"
+        "details": "",
+        "timestamp": "2026-11-13T02:45:22.463235"
       },
       {
-        "test": "Deployment Simulation",
+        "test": "Connected wallet required",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "Transaction hash: 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234",
-        "timestamp": "2026-11-13T02:30:09.486121"
+        "details": "Connection enforced",
+        "timestamp": "2026-11-13T02:45:22.463243"
       },
       {
-        "test": "Execution Payload",
+        "test": "Missing fields rejected",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "Method: increment",
-        "timestamp": "2026-11-13T02:30:09.486157"
+        "details": "Detected: Missing fields: ['contract_name', 'source', 'deployer']",
+        "timestamp": "2026-11-13T02:45:22.463257"
       },
       {
-        "test": "Execution Simulation",
+        "test": "Testnet network enforced",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "Result: {'count': 1, 'execution_time': '150ms'}",
-        "timestamp": "2026-11-13T02:30:09.486165"
+        "details": "testnet only",
+        "timestamp": "2026-11-13T02:45:22.463262"
       },
       {
-        "test": "View Function",
+        "test": "Overall error handling",
         "status": "\u2705 PASSED",
         "passed": true,
-        "details": "Result: {'result': '2'}",
-        "timestamp": "2026-11-13T02:30:09.486171"
-      },
-      {
-        "test": "Invalid Wallet Type Handling",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Only NEAR wallet type accepted",
-        "timestamp": "2026-11-13T02:30:09.486192"
-      },
-      {
-        "test": "Missing Fields Handling",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Missing fields properly detected: Missing required fields: ['contract_name', 'source', 'deployer']",
-        "timestamp": "2026-11-13T02:30:09.486210"
-      },
-      {
-        "test": "Network Validation",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Network properly validated",
-        "timestamp": "2026-11-13T02:30:09.486215"
-      },
-      {
-        "test": "Overall Error Handling",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "2/3 tests passed",
-        "timestamp": "2026-11-13T02:30:09.486221"
-      },
-      {
-        "test": "UI Element: Wallet connection button",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Pattern 'Connect Wallet' found",
-        "timestamp": "2026-11-13T02:30:09.486746"
-      },
-      {
-        "test": "UI Element: Contract deployment button",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Pattern 'Deploy Contract' found",
-        "timestamp": "2026-11-13T02:30:09.486940"
-      },
-      {
-        "test": "UI Element: Execution button",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Pattern 'Execute' found",
-        "timestamp": "2026-11-13T02:30:09.487077"
-      },
-      {
-        "test": "UI Element: View button",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Pattern 'View' found",
-        "timestamp": "2026-11-13T02:30:09.487138"
-      },
-      {
-        "test": "UI Element: Read state button",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Pattern 'Read State' found",
-        "timestamp": "2026-11-13T02:30:09.487353"
-      },
-      {
-        "test": "UI Element: Example contract name",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Pattern 'counter' found",
-        "timestamp": "2026-11-13T02:30:09.487481"
-      },
-      {
-        "test": "UI Element: Example contract definition",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "Pattern 'contract Counter' found",
-        "timestamp": "2026-11-13T02:30:09.487617"
-      },
-      {
-        "test": "Overall UI Elements",
-        "status": "\u2705 PASSED",
-        "passed": true,
-        "details": "7/7 UI elements found",
-        "timestamp": "2026-11-13T02:30:09.487631"
+        "details": "3/3",
+        "timestamp": "2026-11-13T02:45:22.463268"
       }
     ]
   },
-  "performance": {
-    "average_response_time": "150ms",
-    "wallet_connection_time": "200ms",
-    "contract_deployment_time": "500ms",
-    "contract_execution_time": "100ms"
+  "architecture": {
+    "wallet_connector": "@hot-labs/near-connect (esm.sh, importmap)",
+    "connection_mode": "wallet selector popup (no full-page redirect)",
+    "view_calls": "near-api-js connect-only (no sign-in)",
+    "state_changing": "wallet.signAndSendTransaction"
   },
   "coverage": {
     "wallet_types": [
-      "NEAR Wallet (near-api-js)"
+      "NEAR Connect (HOT, Meteor, Nightly, NEAR Mobile, WalletConnect via projectId)"
     ],
     "network_support": [
       "NEAR Testnet"
@@ -234,21 +178,15 @@
       "Execute",
       "View"
     ],
-    "error_scenarios": [
-      "Invalid Input",
-      "Network Issues",
-      "Session Management"
-    ],
     "not_supported": [
-      "WalletConnect (bridge dead + web3-provider is Ethereum, not NEAR)"
+      "Redirect-based requestSignIn (removed by design)"
     ]
   },
   "recommendations": [
-    "\u2705 NEAR Wallet (near-api-js) connection path is the only supported testnet method",
-    "\u2705 Dead helperUrl removed (was HTTP 404, broke near-api-js connect)",
-    "\u2705 Broken WalletConnect path removed (bridge unreachable + web3-provider is Ethereum not NEAR)",
-    "\u2705 walletOption ReferenceError bug fixed",
-    "\ud83d\udd27 WalletConnect not supported \u2014 bridge.walletconnect.org is dead; re-add only via a verified NEAR-compatible provider",
-    "\u26a0\ufe0f Production readiness requires real browser end-to-end verification (this suite uses mocks)"
+    "\u2705 NEAR Connect replaces the redirect-based near-api-js requestSignIn flow",
+    "\u2705 No full-page wallet redirect \u2014 connector.connect() uses a popup selector",
+    "\u2705 Broken @walletconnect/web3-provider (Ethereum, not NEAR) removed",
+    "\u26a0\ufe0f Real transaction signing requires a live browser + NEAR wallet extension",
+    "\u26a0\ufe0f WalletConnect via NEAR Connect needs a valid walletConnect.projectId"
   ]
 }

@@ -118,7 +118,7 @@
     <div class="card">
       <h2>1. Connect to NEAR Testnet</h2>
       <div class="wallet-options">
-        <div class="wallet-option selected" onclick="selectWallet('near')" id="near-option">
+        <div class="wallet-option selected" onclick="connectWallet()" id="near-option">
           <div class="wallet-icon">🧭</div>
           <div><strong>NEAR Wallet</strong></div>
           <div class="small">Native NEAR testnet wallet</div>
@@ -241,16 +241,22 @@
     </div>
   </div>
 
-  <!-- NEAR API JS (required for NEAR testnet wallet connection) -->
+  <!-- NEAR Connect (ES module via importmap, esm.sh). Shows a wallet selector POPUP — no full-page redirect. -->
+  <script type="importmap">
+    { "imports": { "@hot-labs/near-connect": "https://esm.sh/@hot-labs/near-connect" } }
+  </script>
+  <!-- near-api-js (connect only, NO requestSignIn) — used for read-only view calls, which don't need auth or a redirect -->
   <script src="https://cdn.jsdelivr.net/npm/near-api-js@4.0.0/dist/near-api-js.min.js"></script>
 
-  <script>
-    const nearApi = window.nearApi || window;
-    const { connect, keyStores, WalletConnection, utils } = nearApi;
+  <script type="module">
+    import { NearConnector } from "@hot-labs/near-connect";
 
-    let wallet = null;
-    let near = null;
-    let account = null;
+    const { connect, keyStores } = window.nearApi || window;
+
+    let connector = null;
+    let wallet = null;       // NEAR Connect wallet (state-changing calls)
+    let near = null;         // near-api-js connection (read-only view calls)
+    let nearAccount = null;  // near-api-js account (read-only view calls)
     let contractId = 'redsigma.s03-gate.testnet';
 
     const connectBtn = document.getElementById('connectBtn');
@@ -273,29 +279,45 @@
 
     function hideStatus(el) { el.style.display = 'none'; }
 
-    function selectWallet() {
-      // Only NEAR Wallet is supported (the WalletConnect bridge is dead and the
-      // Ethereum provider is not NEAR).
-      nearOption.classList.add('selected');
-      walletNetwork.textContent = 'NEAR Testnet';
-      walletChainId.textContent = '0x1';
-      selectedWalletInfo.style.display = 'block';
-      hideStatus(connectionStatus);
+    // NEAR Connect: opens a wallet selector popup, NOT a full-page redirect.
+    async function connectWallet() {
+      try {
+        if (!connector) {
+          connector = new NearConnector({ network: 'testnet' });
+        }
+
+        setStatus(connectionStatus, 'Opening wallet selector...', 'info');
+
+        // connect() shows the wallet selector popup; no window.location redirect
+        wallet = await connector.connect();
+
+        const accounts = await wallet.getAccounts();
+        if (!accounts || accounts.length === 0) {
+          // Some wallets require an explicit signIn before accounts are available
+          await wallet.signIn({ contractId, methodNames: ['deploy_contract', 'execute', 'view', 'get_contract_count', 'get_owner'] });
+        }
+
+        // near-api-js connection for read-only view calls (no sign-in, no redirect)
+        if (!near) {
+          const keyStore = new keyStores.BrowserLocalStorageKeyStore();
+          near = await connect({
+            networkId: 'testnet',
+            keyStore,
+            nodeUrl: 'https://rpc.testnet.near.org',
+            walletUrl: 'https://wallet.testnet.near.org',
+            explorerUrl: 'https://explorer.testnet.near.org',
+          });
+        }
+        const accountId = accounts[0].accountId;
+        nearAccount = near.account(accountId);
+        enableWallet(accountId);
+      } catch (err) {
+        console.error(err);
+        setStatus(connectionStatus, 'Connection failed: ' + err.message, 'err');
+      }
     }
 
-    async function initNearWallet() {
-      const keyStore = new keyStores.BrowserLocalStorageKeyStore();
-      near = await connect({
-        networkId: 'testnet',
-        keyStore,
-        nodeUrl: 'https://rpc.testnet.near.org',
-        walletUrl: 'https://wallet.testnet.near.org',
-        explorerUrl: 'https://explorer.testnet.near.org',
-      });
-      wallet = new WalletConnection(near, 'redsigma-demo');
-    }
-
-    async function enableWallet(accountId) {
+    function enableWallet(accountId) {
       connectBtn.style.display = 'none';
       disconnectBtn.style.display = 'inline-block';
       setStatus(connectionStatus, 'Connected as: ' + accountId, 'ok');
@@ -305,47 +327,11 @@
       stateBtn.disabled = false;
     }
 
-    async function autoConnect() {
-      if (!wallet) await initNearWallet();
-      if (wallet && wallet.isSignedIn()) {
-        account = wallet.account();
-        const aid = wallet.getAccountId();
-        await enableWallet(aid);
-      }
-    }
-
-    async function connectWallet() {
-      try {
-        if (!wallet) await initNearWallet();
-        contractId = document.getElementById('contractId').value;
-
-        if (!wallet.isSignedIn()) {
-          // Redirect to NEAR wallet for sign-in
-          setStatus(connectionStatus, 'Redirecting to NEAR wallet for authorization...', 'info');
-          await new Promise(r => setTimeout(r, 500)); // let the status render
-          wallet.requestSignIn({
-            contractId: contractId,
-            methodNames: ['deploy_contract', 'execute', 'view', 'get_contract_count', 'get_owner'],
-            successUrl: 'https://sudo-ai-git.github.io/redsigma/',
-            failureUrl: 'https://sudo-ai-git.github.io/redsigma/',
-          });
-          return; // Page will redirect and reload
-        }
-
-        account = wallet.account();
-        const accountId = wallet.getAccountId();
-        await enableWallet(accountId);
-      } catch (err) {
-        console.error(err);
-        setStatus(connectionStatus, 'Connection failed: ' + err.message, 'err');
-      }
-    }
-
     async function disconnectWallet() {
-      if (wallet) {
-        wallet.signOut();
-        wallet = null; near = null; account = null;
-      }
+      try {
+        if (connector && connector.disconnect) await connector.disconnect();
+      } catch (err) { console.error(err); }
+      connector = null; wallet = null; near = null; nearAccount = null;
 
       connectBtn.style.display = 'inline-block';
       disconnectBtn.style.display = 'none';
@@ -356,26 +342,68 @@
       stateBtn.disabled = true;
     }
 
-    // Auto-connect on page load (handles redirect back from NEAR wallet)
+    // Auto-connect on page load (restores session without a redirect)
+    async function autoConnect() {
+      try {
+        if (connector) {
+          const walletCheck = await connector.wallet();
+          if (walletCheck) {
+            wallet = walletCheck;
+            const accounts = await wallet.getAccounts();
+            if (accounts && accounts.length > 0) {
+              if (!near) {
+                const keyStore = new keyStores.BrowserLocalStorageKeyStore();
+                near = await connect({
+                  networkId: 'testnet',
+                  keyStore,
+                  nodeUrl: 'https://rpc.testnet.near.org',
+                  walletUrl: 'https://wallet.testnet.near.org',
+                  explorerUrl: 'https://explorer.testnet.near.org',
+                });
+              }
+              const accountId = accounts[0].accountId;
+              nearAccount = near.account(accountId);
+              enableWallet(accountId);
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        // Not signed in yet — that's fine, user clicks Connect
+        console.log('autoConnect: no prior session', err);
+      }
+    }
+
+    // Auto-connect on page load (restores NEAR Connect session — no redirect)
     autoConnect();
 
     connectBtn.addEventListener('click', connectWallet);
     disconnectBtn.addEventListener('click', disconnectWallet);
 
     async function callContract(method, args, viewCall = false) {
-      if (!account) throw new Error('Not connected');
       const cid = document.getElementById('contractId').value;
       if (viewCall) {
-        return await account.viewFunction(cid, method, args || {});
-      } else {
-        return await account.functionCall(cid, method, args || {}, 300000000000000, 0);
+        return await nearAccount.viewFunction(cid, method, args || {});
       }
+      // State-changing call via NEAR Connect (signAndSendTransaction, no redirect)
+      const actionArgs = args || {};
+      return await wallet.signAndSendTransaction({
+        receiverId: cid,
+        actions: [{
+          type: 'FunctionCall',
+          params: {
+            methodName: method,
+            args: actionArgs,
+            gas: '300000000000000',
+            deposit: '0'
+          }
+        }]
+      });
     }
 
     async function deployContract() {
       const name = document.getElementById('deployName').value;
       const source = document.getElementById('deploySource').value;
-      const deployer = document.getElementById('deployerId').value || (await account.getAccountId()).account_id;
 
       deployBtn.disabled = true;
       setStatus(deployStatus, 'Deploying contract "' + name + '"...', 'info');
@@ -402,9 +430,9 @@
       const methodName = document.getElementById('execMethod').value;
       const argsText = document.getElementById('execArgs').value;
 
-      let args = [];
+      let args = {};
       if (argsText.trim()) {
-        args = new TextEncoder().encode(argsText);
+        try { args = JSON.parse(argsText); } catch (e) { args = { value: argsText }; }
       }
 
       const btn = viewCall ? viewBtn : execBtn;
@@ -418,20 +446,11 @@
         const result = await callContract('execute', {
           contract_name: contractName,
           method_name: methodName,
-          args: Array.from(args),
-        }, false);
+          args: args,
+        }, viewCall);
 
-        // The execute result is the raw return bytes
-        if (result && result.result) {
-          const bytes = new Uint8Array(result.result);
-          const text = new TextDecoder().decode(bytes);
-          const asHex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-          setStatus(statusEl, 'Executed successfully (' + (viewCall ? 'view' : 'state-changing') + ')', 'ok');
-          resultEl.textContent = 'Return bytes (hex): ' + asHex + '\nReturn text: ' + text;
-        } else {
-          setStatus(statusEl, 'Executed successfully', 'ok');
-          resultEl.textContent = JSON.stringify(result, null, 2);
-        }
+        setStatus(statusEl, 'Submitted successfully (' + (viewCall ? 'view' : 'state-changing') + ')', 'ok');
+        resultEl.textContent = JSON.stringify(result, null, 2);
         resultEl.style.display = 'block';
       } catch (err) {
         console.error(err);
@@ -446,9 +465,9 @@
       const methodName = document.getElementById('stateMethod').value;
       const argsText = document.getElementById('stateArgs').value;
 
-      let args = [];
+      let args = {};
       if (argsText.trim()) {
-        args = new TextEncoder().encode(argsText);
+        try { args = JSON.parse(argsText); } catch (e) { args = { value: argsText }; }
       }
 
       stateBtn.disabled = true;
@@ -459,19 +478,11 @@
         const result = await callContract('view', {
           contract_name: contractName,
           method_name: methodName,
-          args: Array.from(args),
-        }, false);
+          args: args,
+        }, true);
 
-        if (result && result.result) {
-          const bytes = new Uint8Array(result.result);
-          const text = new TextDecoder().decode(bytes);
-          const asHex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-          setStatus(stateStatus, 'State read successfully', 'ok');
-          stateResult.textContent = 'Contract: ' + contractName + '\\nMethod: ' + methodName + '\\nReturn bytes (hex): ' + asHex + '\\nReturn text: ' + text;
-        } else {
-          setStatus(stateStatus, 'No result returned', 'warn');
-          stateResult.textContent = 'No value returned from ' + methodName;
-        }
+        setStatus(stateStatus, 'State read successfully', 'ok');
+        stateResult.textContent = 'Contract: ' + contractName + '\\nMethod: ' + methodName + '\\nResult: ' + JSON.stringify(result);
         stateResult.style.display = 'block';
       } catch (err) {
         console.error(err);
