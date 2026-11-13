@@ -687,6 +687,19 @@ The 231-gate checksums must not be presented as a security mechanism.
   WASM directly. The runtime and verifier now share the same integer semantics
   (per-width/signedness, with `u128`/`i128` declined in both), verified by the
   full test suite.
+
+  **Why `wasmtime` is not embedded on-chain:** `wasmtime` is a host-side WASM
+  runtime. It does **not compile for the `wasm32-unknown-unknown` target** —
+  its `errno` dependency explicitly rejects `target_os = "unknown" / "none"`.
+  Even if it compiled, `wasmtime` (~1–2 MB) would exceed the account's storage
+  budget (~2.80 NEAR headroom ≈ 280 KB). So embedding `wasmtime` in the on-chain
+  contract is **impossible at the compilation level**, not merely expensive.
+
+  The honest architecture: on-chain execution dispatches on the AST (works,
+  live, verified); `verify/execute_examples.py` proves the compiled WASM
+  executes correctly off-chain (4/4 pass). The runtime and verifier share
+  per-width/signedness integer semantics, so the AST interpreter and the z3
+  verifier reason about the same integers.
 - **Redeploy completed.** The borsh-only test contract was redeployed to
   `redsigma.s03-gate.testnet` (code hash `EruzgySJeZD7UoLHwtZE5usKUpRFzsH4WMVzdSxMqeo3`,
   639,182 bytes on-chain). The earlier "838,148 bytes ≈ 8.38 NEAR needed,

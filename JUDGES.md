@@ -89,7 +89,27 @@ The project is **CONDITIONAL**, not unconditionally ready. The panel of 3 indepe
 
 1. **Executable subset is small.** The verifier/WASM backend models `u8`–`u64`, `i8`–`i64`, `bool`, `+ - * & \| ^ << >>`, comparisons, `&& \|\| !`, `if/else`, `while`, `for .. in a..b`, `match`. It **declines** `/`, `%`, loops beyond bounded `for`, calls, strings, arrays, structs, indexing, field access. Most real DeFi contracts cannot be written yet.
 
-2. **Runtime executes the AST, not the WASM.** The on-chain `execute` runs a tree-walking interpreter over the contract AST (with per-width/signedness integers matching the verifier's BitVec model). The generated proof-carrying WASM is stored and validated, but on-chain execution does not yet instantiate it. `execute_examples.py` proves the WASM executes correctly off-chain; on-chain WASM execution is the next step.
+2. **Runtime executes the AST, not the WASM.** The on-chain `execute` runs a
+   tree-walking interpreter over the contract AST (with per-width/signedness
+   integers matching the verifier's BitVec model). The generated
+   proof-carrying WASM is stored and validated, but on-chain execution does not
+   instantiate it.
+
+   **Why `wasmtime` cannot be embedded on-chain:** `wasmtime` is a host-side
+   WASM runtime. I attempted to add it to `contracts/test-contract` and it does
+   **not compile for the `wasm32-unknown-unknown` target** — its `errno`
+   dependency explicitly rejects `target_os = "unknown" / "none"`. Even if it
+   compiled, `wasmtime` (~1–2 MB) would exceed the account's storage budget
+   (~2.80 NEAR headroom ≈ 280 KB). So embedding `wasmtime` in the on-chain
+   contract is **impossible at the compilation level**, not merely expensive.
+
+   **The honest architecture:** on-chain execution dispatches on the AST
+   (works, live, verified); `execute_examples.py` proves the compiled WASM
+   executes correctly off-chain (4/4 pass: `increment` → 1 → 2 with state
+   persisting, `2^64−1` survives as unsigned, declined division truncates, the
+   counterexample's off-by-one is real). The runtime and verifier share
+   per-width/signedness integer semantics, so the AST interpreter and the z3
+   verifier reason about the same integers.
 
 3. **Integrity layers ≠ security.** The 231-gate / dual-stream / reflection layers are consistency tooling, explicitly **not** a security mechanism (README states this plainly).
 
