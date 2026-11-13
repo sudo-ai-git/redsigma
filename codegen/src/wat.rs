@@ -22,6 +22,13 @@
 //! The output is WAT text. Assembling and validating it is a separate step
 //! (Python `wasmtime`), because `wat2wasm`/`Module` is the only trustworthy
 //! validity gate — a text-level check cannot see structural defects.
+//!
+//! ## NOT on the compile path
+//!
+//! This module is currently reached only by `codegen/examples/emit_wat.rs`.
+//! `redsigma_compiler::compile()` is a stub and does not call it, so the WAT it
+//! emits cannot reach the deployed contract (which is handwritten Rust). Do not
+//! describe it as "the compiler's WASM backend" — it is an example-only emitter.
 
 use redsigma_parser::{BinOp, Contract, Expr, Stmt, UnOp};
 

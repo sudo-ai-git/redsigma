@@ -3,8 +3,12 @@
 ## Summary
 
 - **Core implementation**: ✅ 121 tests passing, 0 failing (`cargo test --workspace`)
-- **Verification pipeline**: ✅ z3 tri-state verifier + falsifiable self-test (5/5)
+- **Verification pipeline**: ✅ z3 tri-state verifier + falsifiable self-test (17/17)
 - **Testnet deployment**: ✅ **DEPLOYED AND VERIFIED** (was DNS-blocked; RPC is reachable again)
+- **Honest scope**: the deployed contract is **handwritten Rust**, not generated
+  from a `.redsigma` file — `compile()` is a stub. It demonstrates state
+  persistence and the NEAR deployment flow; it does not execute REDΣSIGMA source
+  and does not run the z3 verifier.
 
 ## Deployed Contract (verified 2026-11-12)
 

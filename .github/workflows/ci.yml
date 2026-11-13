@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install z3
+        run: pip install z3-solver
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+      - name: verifier self-test
+        run: python3 verify/redsigma_verify.py --selftest
+
+      - name: hostile-input probes
+        run: python3 verify/hostile_probe.py
+
+      - name: parser hostile inputs
+        run: cargo test -p redsigma-parser --test hostile_inputs
+
+      - name: examples verify as documented
+        run: verify/check_examples.sh

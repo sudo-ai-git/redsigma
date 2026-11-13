@@ -288,6 +288,22 @@ def _eval_binary(
         body["right"], env, state, declines, lw, pre_env, pre_state, ls
     )
 
+    # A bare numeric literal has no intrinsic width. If exactly one side is a
+    # literal, let it adopt the other side's width/signedness instead of
+    # declining — otherwise `0 <= x` and `x >= 0` mean different things
+    # depending on operand order.
+    if lw is not None and rw is not None and lw != rw:
+        left_is_lit = isinstance(body["left"], dict) and set(body["left"]) == {"Number"}
+        right_is_lit = isinstance(body["right"], dict) and set(body["right"]) == {"Number"}
+        if right_is_lit and not left_is_lit:
+            right, rw, rs = eval_expr(
+                body["right"], env, state, declines, lw, pre_env, pre_state, ls
+            )
+        elif left_is_lit and not right_is_lit:
+            left, lw, ls = eval_expr(
+                body["left"], env, state, declines, rw, pre_env, pre_state, rs
+            )
+
     if lw is not None and rw is not None and lw != rw:
         raise Decline(
             f"mixed-width arithmetic: {lw}-bit vs {rw}-bit operands are not "
@@ -548,7 +564,14 @@ class FunctionReport:
 
     @property
     def passed(self) -> bool:
-        return bool(self.obligations) and all(o.status == "Proven" for o in self.obligations)
+        # A recorded decline means the layer did not fully model the function.
+        # Reporting `passed` while a decline is on the record would let a green
+        # exit code coexist with "this is not a proof of the written predicate".
+        return (
+            bool(self.obligations)
+            and all(o.status == "Proven" for o in self.obligations)
+            and not self.declines
+        )
 
 
 def verify_function(
@@ -559,18 +582,35 @@ def verify_function(
     report = FunctionReport(name=fn["name"])
 
     env: Dict[str, Binding] = {}
+    param_names = set()
     for p in fn.get("params", []):
+        name = p["name"]
+        # A parameter that shadows a state field (or another parameter) makes
+        # every clause ambiguous: `post: count == 0` would read the parameter,
+        # not the field, and the verifier would prove a statement about nothing.
+        if name in state_types:
+            raise Decline(
+                f"parameter '{name}' shadows state field '{name}'; clauses "
+                "about state would be unsound"
+            )
+        if name in param_names:
+            raise Decline(f"duplicate parameter '{name}'")
+        param_names.add(name)
         ty = p["type"]
         width = declared_width(ty)
         kind = type_kind(ty)
         if kind == "int":
-            env[p["name"]] = (
-                z3.BitVec(p["name"], width or 64), width, type_signed(ty)
+            # FreshConst, not a user-named symbol: a parameter named `x__pre`
+            # would otherwise BE the state symbol and silently alias it.
+            env[name] = (
+                z3.FreshConst(z3.BitVecSort(width or 64), "rs_param"),
+                width,
+                type_signed(ty),
             )
         elif kind == "bool":
-            env[p["name"]] = (z3.Bool(p["name"]), None, None)
+            env[name] = (z3.FreshConst(z3.BoolSort(), "rs_param"), None, None)
         else:
-            report.declines.append(f"parameter '{p['name']}' has unsupported type '{ty}'")
+            report.declines.append(f"parameter '{name}' has unsupported type '{ty}'")
 
     state: Dict[str, Binding] = {}
     for name, ty in state_types.items():
@@ -578,16 +618,25 @@ def verify_function(
         kind = type_kind(ty)
         if kind == "int":
             state[name] = (
-                z3.BitVec(f"{name}__pre", width or 64), width, type_signed(ty)
+                z3.FreshConst(z3.BitVecSort(width or 64), "rs_state_pre"),
+                width,
+                type_signed(ty),
             )
         elif kind == "bool":
-            state[name] = (z3.Bool(f"{name}__pre"), None, None)
+            state[name] = (z3.FreshConst(z3.BoolSort(), "rs_state_pre"), None, None)
         else:
             report.declines.append(f"state field '{name}' has unsupported type '{ty}'")
 
     pre = fn.get("pre")
     post = fn.get("post")
     invariant = fn.get("invariant")
+
+    if post is None and invariant is None:
+        # A function must carry its OWN proof. Contract invariants are
+        # additional obligations, never a substitute: otherwise a function with
+        # no `@verified` at all would report passed=True.
+        report.declines.append("no postcondition and no invariant clause")
+        return report
 
     goals: List[Tuple[str, Any]] = []
     if post is not None:
@@ -599,12 +648,6 @@ def verify_function(
     # exported to JSON and then silently ignored.
     for i, inv in enumerate(contract_invariants or []):
         goals.append((f"contract_invariant[{i}]", inv))
-
-    if not goals:
-        report.declines.append(
-            "no postcondition, no invariant clause and no contract invariant"
-        )
-        return report
 
     pre_term = z3.BoolVal(True)
     if pre is not None:
@@ -749,6 +792,10 @@ def verify_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
             continue
         try:
             reports.append(verify_function(fn, state_types, contract_invariants))
+        except Decline as d:
+            r = FunctionReport(name=str(fn.get("name", "?")))
+            r.declines.append(str(d))
+            reports.append(r)
         except (KeyError, TypeError) as exc:
             # A hand-edited JSON document can omit keys the exporter always
             # writes. That is a malformed input, not a traceback.
@@ -1087,7 +1134,76 @@ _SELFTEST_CASES = [
         ),
         {"post": "Unverified"},
     ),
+    (
+        # Regression: a parameter with the same name as a state field made the
+        # clause read the parameter, so `post: x == 0` was Proven by nothing.
+        "a parameter cannot shadow a state field",
+        _contract(
+            "ParamShadow",
+            ["x"],
+            _fn(
+                "f",
+                [_ret(None)],
+                pre={"Bool": True},
+                post=_bin("Eq", _id("x"), _num(0)),
+                params=["x"],
+            ),
+        ),
+        {},
+    ),
+    (
+        # Regression: a parameter named `x__pre` aliased the state's pre-state
+        # z3 symbol (both were named after the source identifier).
+        "a parameter named like the old state symbol does not alias it",
+        _contract(
+            "SymbolAlias",
+            ["x"],
+            _fn(
+                "f",
+                [_set("x", _bin("Add", _id("x"), _id("x__pre"))), _ret(None)],
+                pre={"Bool": True},
+                post=_bin("Eq", _id("x"), _bin("Add", _old("x"), _id("x__pre"))),
+                params=["x__pre"],
+            ),
+        ),
+        {"post": "Proven"},
+    ),
+    (
+        # Regression: contract invariants alone must not make an unannotated
+        # function pass — every function carries its OWN proof.
+        "an unannotated function is not passed even with contract invariants",
+        _contract(
+            "NoAnnotation",
+            ["x"],
+            _fn("get", [_ret(_id("x"))], pre=None, post=None, invariant=None),
+            invariants=[_bin("Ge", _id("x"), _num(0))],
+        ),
+        {},
+    ),
+    (
+        # Regression: a bare literal has no intrinsic width, so `0 <= x` was
+        # declined as mixed-width while `x >= 0` was Proven — the same predicate
+        # had different verdicts depending on operand order.
+        "literal adopts the typed operand's width",
+        _contract(
+            "OperandOrder",
+            [("x", "u8")],
+            _fn(
+                "f",
+                [_ret(None)],
+                pre={"Bool": True},
+                post=_bin("Le", _num(0), _id("x")),
+            ),
+        ),
+        {"post": "Proven"},
+    ),
 ]
+
+
+_EXPECT_NOT_PASSED = {
+    "an unannotated function is not passed even with contract invariants",
+    "a parameter cannot shadow a state field",
+}
 
 
 def selftest() -> int:
@@ -1104,6 +1220,12 @@ def selftest() -> int:
                     f"{label}: {kind} expected {want}, got {actual} "
                     f"(declines={result['functions'][0]['declines']})"
                 )
+        # Some cases assert the overall verdict, not individual obligations.
+        if label in _EXPECT_NOT_PASSED and result["functions"][0]["passed"]:
+            case_failures.append(
+                f"{label}: expected passed=False, got True "
+                f"(declines={result['functions'][0]['declines']})"
+            )
         failures.extend(case_failures)
         print(
             f"{'PASS' if not case_failures else 'FAIL'}  {label}: "

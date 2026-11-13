@@ -611,6 +611,15 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, String> {
+        // Generic nesting (`Vec<Vec<Vec<...>>>`) recurses here without going
+        // through parse_expr, so it needs the same depth guard.
+        self.enter()?;
+        let result = self.parse_type_inner();
+        self.leave();
+        result
+    }
+
+    fn parse_type_inner(&mut self) -> Result<Type, String> {
         self.skip_whitespace();
         let name = self.parse_identifier()?;
         let mut generics = Vec::new();

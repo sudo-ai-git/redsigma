@@ -394,8 +394,12 @@ PASS  -2**63 is representable as an i64 literal: {'post': 'Proven'}
 PASS  a local cannot shadow a state field: {'post': 'Unverified'}
 PASS  contract-level invariants are discharged per function: {'post': 'Proven', 'contract_invariant[0]': 'Counterexample'}
 PASS  mixed-width assignment is declined, not silently truncated: {'post': 'Unverified'}
+PASS  a parameter cannot shadow a state field: no obligations
+PASS  a parameter named like the old state symbol does not alias it: {'post': 'Proven'}
+PASS  an unannotated function is not passed even with contract invariants: no obligations
+PASS  literal adopts the typed operand's width: {'post': 'Proven'}
 
-self-test: 14/14 cases as expected
+self-test: 18/18 cases as expected
 ```
 
 Each case names the verdict it expects, so the gate is falsifiable: reverting
@@ -547,7 +551,9 @@ fn main() -> Result<(), CompilerError> {
 
 ## NEAR testnet — live
 
-A NEAR contract exercising the same state/verification model is deployed:
+A **handwritten Rust** NEAR contract is deployed (it is *not* generated from a
+`.redsigma` file — `compile()` is a stub, so nothing on the deployed path
+exercises the language):
 
 | | |
 |---|---|
@@ -583,12 +589,11 @@ structural), a 5-bucket semantic projection, a bijective verifier, causal
 parent→child memory chains, and a 6-layer self-reflection engine
 (Consistency → Memory → Oracle → Completeness → Uncertainty → Contradiction).
 
-Ten application spike tests were executed and passed at the framework level
-(tamper-evident memory, adversarial compression, syndrome diagnostics,
-primality-verified skills, self-verifying language, cross-lingual transfer,
-curriculum scheduler, fugue decomposition, quantum-resistant VRE,
-embedding-free retrieval). They exercise the 231-gate mathematics, not the
-compiler pipeline.
+These layers are **integrity/consistency tooling, not program verification**: they
+check that a contract's projection is deterministic, that its state transitions
+form a causal chain, and that it contains no self-contradiction. They do not
+prove that a contract computes the right thing — that is the z3 verifier's job.
+The 231-gate checksums must not be presented as a security mechanism.
 
 ---
 
@@ -597,7 +602,7 @@ compiler pipeline.
 **Working and verified by execution:**
 
 - Parser for the subset described above; `@verified` clauses captured as AST.
-- z3 tri-state verifier with a falsifiable 14/14 self-test.
+- z3 tri-state verifier with a falsifiable 18/18 self-test.
 - Hostile-input probes: the parser returns a clean error (never SIGABRT) on
   deep nesting, unterminated comments/strings and malformed literals; the
   verifier returns `Unverified` (never a traceback) on malformed literals,
@@ -606,6 +611,18 @@ compiler pipeline.
   6-layer reflection, 231-gate checksums.
 - `cargo test --workspace`: 121 tests passing.
 - A NEAR test contract, deployed and exercised on testnet.
+
+**Known divergences (honest limitations):**
+
+- The z3 verifier and the Rust runtime are **independent implementations**.
+  The verifier models per-width `BitVec` and *declines* a literal that does not
+  fit its declared type; the runtime encodes every integer as `u128` and
+  truncates to the field width on store. A contract the verifier declines can
+  therefore still run in the runtime (with truncation). The two have not been
+  proved to agree, and `compile()` is a stub, so nothing on the deployed path
+  exercises either from the same source.
+- `codegen/src/wat.rs` is a real WAT emitter but is reached only by
+  `codegen/examples/emit_wat.rs`; it is not on the compile path.
 
 **Not implemented yet:**
 
