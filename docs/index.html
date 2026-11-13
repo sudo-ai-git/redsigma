@@ -244,7 +244,12 @@
           // Redirect to NEAR wallet for sign-in
           setStatus(connectionStatus, 'Redirecting to NEAR wallet for authorization...', 'info');
           await new Promise(r => setTimeout(r, 500)); // let the status render
-          wallet.requestSignIn();
+          wallet.requestSignIn({
+            contractId: contractId,
+            methodNames: ['deploy_contract', 'execute', 'view', 'get_contract_count', 'get_owner'],
+            successUrl: 'https://sudo-ai-git.github.io/redsigma/',
+            failureUrl: 'https://sudo-ai-git.github.io/redsigma/',
+          });
           return; // Page will redirect and reload
         }
 
