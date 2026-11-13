@@ -14,9 +14,11 @@ use std::collections::HashMap;
 
 pub mod wat;
 pub mod wat2wasm;
+pub mod near_abi;
 
 pub use wat::{collect_locals, emit_wat, is_supported_int};
 pub use wat2wasm::assemble;
+pub use near_abi::emit_near_module;
 
 #[derive(Error, Debug)]
 pub enum CodegenError {
@@ -379,10 +381,11 @@ impl CodegenPipeline {
             None,
         );
 
-        // Lower to WAT, then assemble a real WASM module. This used to return a
-        // ~48-byte placeholder with empty sections, which is why the
-        // "proof-carrying WASM" claim had no artifact behind it.
-        let wat = emit_wat(contract)?;
+        // Lower to WAT with the NEAR ABI layer, then assemble a real WASM
+        // module. The generated module is a proper NEAR contract: it imports
+        // NEAR host functions, exports memory, and wraps each contract
+        // function as a NEAR method that reads/writes state via storage.
+        let wat = emit_near_module(contract)?;
         let bytecode = assemble(&wat)?;
 
         // Create proof object

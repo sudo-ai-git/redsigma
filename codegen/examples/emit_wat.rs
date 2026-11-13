@@ -1,36 +1,35 @@
-//! Emit WAT for a REDΣSIGMA contract.
-//!
-//! ```sh
-//! cargo run -p redsigma-codegen --example emit_wat -- contract.redsigma
-//! ```
-//!
-//! The output is WAT text. Assemble and validate it with `wasmtime`, which is
-//! the only trustworthy validity gate:
-//!
-//! ```python
-//! import wasmtime
-//! binary = wasmtime.wat2wasm(wat)      # parse
-//! module = wasmtime.Module(engine, binary)  # VALIDATE
-//! ```
-
-use redsigma_codegen::emit_wat;
+use redsigma_codegen::{emit_near_module, assemble};
 use redsigma_parser::Parser;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    let source = if args.len() > 1 {
-        std::fs::read_to_string(&args[1])?
-    } else {
-        let mut s = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)?;
-        s
-    };
-
-    let contracts = Parser::parse(&source).map_err(|e| format!("parse error: {}", e))?;
-    if contracts.is_empty() {
-        return Err("no contracts parsed".into());
+fn main() {
+    let input = r#"
+        contract Counter {
+            invariant count >= 0;
+            state {
+                count: u64,
+            }
+            fn increment() -> u64 {
+                let new_count = count + 1;
+                count = new_count;
+                new_count;
+            }
+            fn get() -> u64 { count; }
+        }
+    "#;
+    let contracts = Parser::parse(input).unwrap();
+    match emit_near_module(&contracts[0]) {
+        Ok(wat) => {
+            println!("=== NEAR WAT ===");
+            println!("{}", wat);
+            match assemble(&wat) {
+                Ok(bytes) => {
+                    println!("\n=== WASM: {} bytes ===", bytes.len());
+                    println!("Magic: {:02x?}", &bytes[0..4]);
+                    println!("Version: {:02x?}", &bytes[4..8]);
+                }
+                Err(e) => println!("ASSEMBLE ERROR: {}", e),
+            }
+        }
+        Err(e) => println!("EMIT ERROR: {}", e),
     }
-    let wat = emit_wat(&contracts[0]).map_err(|e| format!("codegen error: {}", e))?;
-    print!("{}", wat);
-    Ok(())
 }

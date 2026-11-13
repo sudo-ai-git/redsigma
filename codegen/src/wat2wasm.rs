@@ -996,6 +996,10 @@ fn encode_instr(
         "i32.store16" => Instruction::I32Store16(memarg),
         "i64.store" => Instruction::I64Store(memarg),
         "i64.extend_i32_u" => Instruction::I64ExtendI32U,
+        // The NEAR ABI write path truncates an i64 state global to i32 before a
+        // narrow store, and the read path widens back afterwards. Without this
+        // entry the emitter's own output was rejected by its own assembler.
+        "i32.wrap_i64" => Instruction::I32WrapI64,
         "drop" => Instruction::Drop,
         "return" => Instruction::Return,
         "end" => Instruction::End,

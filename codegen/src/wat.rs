@@ -9,9 +9,8 @@
 //! ## Executable subset
 //!
 //! - Contract state fields become mutable `i64` globals.
-//! - All integer locals and parameters lower to `i64`. `u8..u64` and `i8..i64`
-//!   share one representation; `u128`/`i128` are **rejected** rather than
-//!   silently truncated.
+//! - All integer locals and parameters lower to `i64`. `u8..u64` and `i8..i64` share
+//!   one representation; `u128`/`i128` are **rejected** rather than silently truncated.
 //! - Statements: `let`/`const`, expression statements, `return`, `if/else`,
 //!   `while`, `for .. in a..b`, `match`, `break`, `continue`.
 //! - Expressions: numbers, identifiers, booleans, unary and binary operators,
@@ -23,25 +22,144 @@
 //! (Python `wasmtime`), because `wat2wasm`/`Module` is the only trustworthy
 //! validity gate — a text-level check cannot see structural defects.
 //!
-//! ## NOT on the compile path
+//! ## NEAR inner mode
 //!
-//! This module is currently reached only by `codegen/examples/emit_wat.rs`.
-//! `redsigma_compiler::compile()` is a stub and does not call it, so the WAT it
-//! emits cannot reach the deployed contract (which is handwritten Rust). Do not
-//! describe it as "the compiler's WASM backend" — it is an example-only emitter.
+//! `emit_inner_wat` lowers the contract with function names prefixed by
+//! `inner_` and without `(export ...)` entries, so the NEAR ABI layer in
+//! [`crate::near_abi`] can wrap them as proper NEAR contract methods.
 
-use redsigma_parser::{BinOp, Contract, Expr, Stmt, UnOp};
+use redsigma_parser::{BinOp, Contract, Expr, Stmt, Type, UnOp};
 
 use crate::CodegenError;
 
-/// Lower a contract to WAT text.
+/// Lower a contract to WAT text (full module with exports).
 pub fn emit_wat(contract: &Contract) -> Result<String, CodegenError> {
-    let mut e = Emitter::new(contract);
-    e.emit()
+    let mut e = Emitter::new(contract, false);
+    e.emit_module()
+}
+
+/// Lower a contract to WAT text for NEAR embedding: functions are prefixed
+/// with `inner_` and are NOT exported (the NEAR ABI layer exports them instead).
+pub fn emit_inner_wat(contract: &Contract) -> Result<String, CodegenError> {
+    let mut e = Emitter::new(contract, true);
+    e.emit_contents()
+}
+
+/// Whether a declared integer type can be lowered by this backend.
+///
+/// Everything up to 64 bits shares one `i64` representation. 128-bit integers
+/// are rejected rather than truncated.
+pub fn is_supported_int(name: &str) -> bool {
+    let bare = name.strip_prefix("Verified").unwrap_or(name);
+    matches!(
+        bare,
+        "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "bool"
+    )
+}
+
+/// Names of locals a function body declares, in first-seen order.
+pub fn collect_locals(body: &[Stmt]) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk_stmt(stmt: &Stmt, out: &mut Vec<String>) {
+        match stmt {
+            Stmt::Let { name, value, .. } | Stmt::Const { name, value, .. } => {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+                walk_expr(value, out);
+            }
+            Stmt::Expr(e) => walk_expr(e, out),
+            Stmt::Return(Some(e)) => walk_expr(e, out),
+            Stmt::Return(None) => {}
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                walk_expr(condition, out);
+                for s in then_branch {
+                    walk_stmt(s, out);
+                }
+                if let Some(eb) = else_branch {
+                    for s in eb {
+                        walk_stmt(s, out);
+                    }
+                }
+            }
+            Stmt::While { condition, body } => {
+                walk_expr(condition, out);
+                for s in body {
+                    walk_stmt(s, out);
+                }
+            }
+            Stmt::For { var, iter, body, .. } => {
+                if !out.contains(var) {
+                    out.push(var.clone());
+                }
+                if !out.contains(&format!("__for_{}", var)) {
+                    out.push(format!("__for_{}", var));
+                }
+                walk_expr(iter, out);
+                for s in body {
+                    walk_stmt(s, out);
+                }
+            }
+            Stmt::Match { expr, arms } => {
+                walk_expr(expr, out);
+                for (_, e) in arms {
+                    walk_expr(e, out);
+                }
+            }
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+    fn walk_expr(expr: &Expr, out: &mut Vec<String>) {
+        match expr {
+            Expr::Binary { left, right, .. } => {
+                walk_expr(left, out);
+                walk_expr(right, out);
+            }
+            Expr::Unary { expr, .. } => walk_expr(expr, out),
+            Expr::Call { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
+            Expr::Block(stmts) => {
+                for s in stmts {
+                    walk_stmt(s, out);
+                }
+            }
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                walk_expr(condition, out);
+                walk_expr(then_branch, out);
+                if let Some(e) = else_branch {
+                    walk_expr(e, out);
+                }
+            }
+            Expr::Match { expr, arms } => {
+                walk_expr(expr, out);
+                for (_, e) in arms {
+                    walk_expr(e, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    for s in body {
+        walk_stmt(s, &mut out);
+    }
+    out
 }
 
 struct Emitter<'a> {
     contract: &'a Contract,
+    /// When true, functions are named `$inner_<name>` and not exported.
+    near_inner: bool,
     /// locals declared in the function currently being emitted
     locals: Vec<String>,
     /// type of each local (all i64 in this backend)
@@ -51,9 +169,10 @@ struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
-    fn new(contract: &'a Contract) -> Self {
+    fn new(contract: &'a Contract, near_inner: bool) -> Self {
         Self {
             contract,
+            near_inner,
             locals: Vec::new(),
             out: String::new(),
             indent: 1,
@@ -72,10 +191,29 @@ impl<'a> Emitter<'a> {
         self.out.push('\n');
     }
 
-    fn emit(mut self) -> Result<String, CodegenError> {
+    /// Emit a complete WAT module (with `(module ...)` wrapper and exports).
+    fn emit_module(mut self) -> Result<String, CodegenError> {
         self.line("(module");
 
         // ---- state globals ----
+        self.emit_globals()?;
+
+        // ---- functions ----
+        self.emit_functions()?;
+
+        self.line(")");
+        Ok(self.out)
+    }
+
+    /// Emit just the module contents (globals + functions) without the
+    /// `(module ...)` wrapper and without exports. Used by the NEAR ABI layer.
+    fn emit_contents(mut self) -> Result<String, CodegenError> {
+        self.emit_globals()?;
+        self.emit_functions()?;
+        Ok(self.out)
+    }
+
+    fn emit_globals(&mut self) -> Result<(), CodegenError> {
         for (name, ty) in &self.contract.state.fields {
             if !is_supported_int(&ty.name) {
                 return Err(CodegenError::UnsupportedExpression(format!(
@@ -85,8 +223,10 @@ impl<'a> Emitter<'a> {
             }
             self.line(&format!("(global ${} (mut i64) (i64.const 0))", name));
         }
+        Ok(())
+    }
 
-        // ---- functions ----
+    fn emit_functions(&mut self) -> Result<(), CodegenError> {
         for func in &self.contract.functions {
             if !is_supported_int(&func.return_type.name) && !func.return_type.name.is_empty() {
                 return Err(CodegenError::UnsupportedExpression(format!(
@@ -104,6 +244,11 @@ impl<'a> Emitter<'a> {
             }
 
             self.locals.clear();
+            let func_name = if self.near_inner {
+                format!("inner_{}", func.name)
+            } else {
+                func.name.clone()
+            };
             let params: Vec<String> = func
                 .params
                 .iter()
@@ -116,7 +261,7 @@ impl<'a> Emitter<'a> {
             };
             self.line(&format!(
                 "(func ${} {}{}",
-                func.name,
+                func_name,
                 params.join(" "),
                 result
             ));
@@ -166,11 +311,12 @@ impl<'a> Emitter<'a> {
             }
             self.indent -= 1;
             self.line(")");
-            self.line(&format!("(export \"{}\" (func ${}))", func.name, func.name));
-        }
 
-        self.line(")");
-        Ok(self.out)
+            if !self.near_inner {
+                self.line(&format!("(export \"{}\" (func ${}))", func.name, func_name));
+            }
+        }
+        Ok(())
     }
 
     // ---------- statements ----------
@@ -286,15 +432,28 @@ impl<'a> Emitter<'a> {
                 self.line(&format!("(local.set ${})", idx));
                 self.line("(loop");
                 self.indent += 1;
-                // exit when `idx < to` is false: the comparison is already an
-                // i32, so it only needs inverting.
-                self.line(&format!(
-                    "(br_if 1 (i32.eqz (i64.lt_s (local.get ${})",
-                    idx
-                ));
+                // exit when `idx < to` is false: the comparison is an i32, so it
+                // only needs inverting. Loop counters are inherently non-negative
+                // counts, so compare as UNSIGNED: a u64 bound > i64::MAX must
+                // compare as a large positive number, not as a negative i64.
+                self.expr(&from)?;
                 self.expr(&to)?;
-                self.line(")))");
-                self.line(&format!("(local.set ${} (local.get ${}))", var, idx));
+                self.line("(i64.lt_u)");
+                self.line("(i32.eqz)");
+                self.line("(br_if 1)");
+                for s in body {
+                    self.stmt(s)?;
+                }
+                self.line(&format!(
+                    "(local.set ${} (i64.add (local.get ${}) (i64.const 1)))",
+                    idx, idx
+                ));
+                self.line("(br 0)");
+                self.indent -= 1;
+                self.line(")");
+                self.indent -= 1;
+                self.line(")");
+                return Ok(());
                 for s in body {
                     self.stmt(s)?;
                 }
@@ -361,7 +520,10 @@ impl<'a> Emitter<'a> {
             self.line("(if");
         }
         self.indent += 1;
-        self.line(&format!("(i64.eq (local.get $__match) (i64.const {}))", pat));
+        self.line(&format!(
+            "(i64.eq (local.get $__match) (i64.const {}))",
+            pat
+        ));
         self.line("(then");
         self.indent += 1;
         self.expr(body)?;
@@ -497,10 +659,20 @@ impl<'a> Emitter<'a> {
                 }
             },
             Expr::Call { func, args } => {
+                let callee = if self.near_inner {
+                    // Inner functions call each other via their inner_ names.
+                    if self.contract.functions.iter().any(|f| f.name == *func) {
+                        format!("inner_{}", func)
+                    } else {
+                        func.clone()
+                    }
+                } else {
+                    func.clone()
+                };
                 for a in args {
                     self.expr(a)?;
                 }
-                self.line(&format!("(call ${})", func));
+                self.line(&format!("(call ${})", callee));
             }
             Expr::Block(stmts) => {
                 // A block's value is its last expression statement's value; the
@@ -567,124 +739,8 @@ fn is_comparison(expr: &Expr) -> bool {
     matches!(
         expr,
         Expr::Binary {
-            op: BinOp::Eq
-                | BinOp::Ne
-                | BinOp::Lt
-                | BinOp::Gt
-                | BinOp::Le
-                | BinOp::Ge,
+            op: BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge,
             ..
         }
     )
-}
-
-/// Whether a declared integer type can be lowered by this backend.
-///
-/// Everything up to 64 bits shares one `i64` representation. 128-bit integers
-/// are rejected rather than truncated.
-pub fn is_supported_int(name: &str) -> bool {
-    let bare = name.strip_prefix("Verified").unwrap_or(name);
-    matches!(
-        bare,
-        "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "bool"
-    )
-}
-
-/// Names of locals a function body declares, in first-seen order.
-pub fn collect_locals(body: &[Stmt]) -> Vec<String> {
-    let mut out = Vec::new();
-    fn walk_stmt(stmt: &Stmt, out: &mut Vec<String>) {
-        match stmt {
-            Stmt::Let { name, value, .. } | Stmt::Const { name, value, .. } => {
-                if !out.contains(name) {
-                    out.push(name.clone());
-                }
-                walk_expr(value, out);
-            }
-            Stmt::Expr(e) => walk_expr(e, out),
-            Stmt::Return(Some(e)) => walk_expr(e, out),
-            Stmt::Return(None) => {}
-            Stmt::If {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                walk_expr(condition, out);
-                for s in then_branch {
-                    walk_stmt(s, out);
-                }
-                if let Some(eb) = else_branch {
-                    for s in eb {
-                        walk_stmt(s, out);
-                    }
-                }
-            }
-            Stmt::While { condition, body } => {
-                walk_expr(condition, out);
-                for s in body {
-                    walk_stmt(s, out);
-                }
-            }
-            Stmt::For { var, iter, body, .. } => {
-                if !out.contains(var) {
-                    out.push(var.clone());
-                }
-                if !out.contains(&format!("__for_{}", var)) {
-                    out.push(format!("__for_{}", var));
-                }
-                walk_expr(iter, out);
-                for s in body {
-                    walk_stmt(s, out);
-                }
-            }
-            Stmt::Match { expr, arms } => {
-                walk_expr(expr, out);
-                for (_, e) in arms {
-                    walk_expr(e, out);
-                }
-            }
-            Stmt::Break | Stmt::Continue => {}
-        }
-    }
-    fn walk_expr(expr: &Expr, out: &mut Vec<String>) {
-        match expr {
-            Expr::Binary { left, right, .. } => {
-                walk_expr(left, out);
-                walk_expr(right, out);
-            }
-            Expr::Unary { expr, .. } => walk_expr(expr, out),
-            Expr::Call { args, .. } => {
-                for a in args {
-                    walk_expr(a, out);
-                }
-            }
-            Expr::Block(stmts) => {
-                for s in stmts {
-                    walk_stmt(s, out);
-                }
-            }
-            Expr::If {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                walk_expr(condition, out);
-                walk_expr(then_branch, out);
-                if let Some(e) = else_branch {
-                    walk_expr(e, out);
-                }
-            }
-            Expr::Match { expr, arms } => {
-                walk_expr(expr, out);
-                for (_, e) in arms {
-                    walk_expr(e, out);
-                }
-            }
-            _ => {}
-        }
-    }
-    for s in body {
-        walk_stmt(s, &mut out);
-    }
-    out
 }
