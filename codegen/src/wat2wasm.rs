@@ -1,7 +1,6 @@
-//! Assemble the WAT emitted by [`crate::wat`] into WASM bytecode.
+//! Assemble the WAT emitted by [`crate::wat`] and [`crate::near_abi`] into WASM bytecode.
 //!
 //! `wat::emit_wat` produces machine-generated WAT in a bounded subset:
-//!
 //! ```text
 //! (module
 //!   (global $name (mut i64) (i64.const 0))
@@ -9,20 +8,30 @@
 //!   (export "name" (func $f)))
 //! ```
 //!
+//! `near_abi::emit_near_module` extends this with NEAR ABI constructs:
+//! - `(import "env" "name" (func ...))` — NEAR host function imports
+//! - `(memory (export "memory") 1)` — exported linear memory
+//! - `(global $name (mut i32) ...)` — i32 globals (heap pointer, key pointers)
+//! - i32 params and locals
+//! - i32/i64 load/store instructions
+//!
 //! Instructions appear both **unfolded** (`(local.get $x) (i64.add)`) and
 //! **folded** (`(local.set $x (i64.add ...))`, `(br_if 1 <cond>)`,
 //! `(if (result i64) <cond> (then ...) (else ...))`). This module parses exactly
 //! that subset and encodes it with `wasm-encoder`; anything else is an error
 //! rather than a guess.
 //!
-//! It is deliberately not a general WAT implementation. `compile()` no longer
-//! emits a placeholder: it lowers to WAT and assembles it to a real module.
+//! Imported functions occupy indices `0..n_imports-1` in the WASM function
+//! index space; defined functions start at `n_imports`. A `call` to an
+//! imported function uses its import index; a `call` to a defined function
+//! uses `n_imports + defined_index`.
 
 use crate::CodegenError;
 use std::collections::HashMap;
 use wasm_encoder::{
     BlockType, CodeSection, Export, ExportSection, Function, FunctionSection, GlobalSection,
-    GlobalType, Instruction, Module as WasmModule, TypeSection, ValType,
+    GlobalType, ImportSection, Instruction, MemorySection, MemoryType, Module as WasmModule,
+    TypeSection, ValType,
 };
 
 // --------------------------------------------------------------------------
@@ -46,6 +55,15 @@ fn tokenize(input: &str) -> Result<Vec<Token>, CodegenError> {
         match c {
             c if c.is_whitespace() => {
                 chars.next();
+            }
+            ';' => {
+                // `;;` comment — skip to end of line
+                while let Some(&c) = chars.peek() {
+                    if c == '\n' {
+                        break;
+                    }
+                    chars.next();
+                }
             }
             '(' => {
                 tokens.push(Token::LParen);
@@ -77,7 +95,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, CodegenError> {
                             }
                             None => {
                                 return Err(CodegenError::CodegenError(
-                                    "unterminated escape in WAT string".to_string(),
+                                    "unterminated escape in WAT".to_string(),
                                 ))
                             }
                         },
@@ -195,6 +213,25 @@ fn as_i64(node: &Node) -> Result<i64, CodegenError> {
     }
 }
 
+fn as_i32(node: &Node) -> Result<i32, CodegenError> {
+    match node {
+        Node::Word(w) => {
+            if let Ok(v) = w.parse::<i32>() {
+                return Ok(v);
+            }
+            if let Ok(v) = w.parse::<u32>() {
+                return Ok(v as i32);
+            }
+            Err(CodegenError::CodegenError(format!(
+                "invalid i32 integer {w:?} in WAT"
+            )))
+        }
+        _ => Err(CodegenError::CodegenError(
+            "expected an i32 integer in WAT".to_string(),
+        )),
+    }
+}
+
 /// `$name` → `name`
 fn dollar_name(node: &Node) -> Result<&str, CodegenError> {
     match node {
@@ -212,20 +249,28 @@ fn dollar_name(node: &Node) -> Result<&str, CodegenError> {
 // --------------------------------------------------------------------------
 
 struct Encoder {
+    imports: ImportSection,
     types: TypeSection,
     funcs: FunctionSection,
     globals: GlobalSection,
+    memories: MemorySection,
     exports: ExportSection,
     code: CodeSection,
     /// source name -> global index
     global_idx: HashMap<String, u32>,
-    /// source name -> function index
+    /// source name -> function index (in the *defined-function* space;
+    /// imported functions occupy indices 0..num_imported_funcs-1)
     func_idx: HashMap<String, u32>,
+    /// number of imported functions
+    num_imported_funcs: u32,
     /// (params, results) encoded as valtype bytes -> type index
     type_idx: HashMap<(Vec<u8>, Vec<u8>), u32>,
+    /// memory index counter
+    memory_count: u32,
 }
 
-/// Assemble WAT produced by `wat::emit_wat` into a WASM module.
+/// Assemble WAT produced by `wat::emit_wat` or `near_abi::emit_near_module`
+/// into a WASM module.
 pub fn assemble(wat: &str) -> Result<Vec<u8>, CodegenError> {
     let tokens = tokenize(wat)?;
     let mut parser = Parser { tokens, pos: 0 };
@@ -254,47 +299,142 @@ fn encode_module(module: &Node) -> Result<Vec<u8>, CodegenError> {
     }
 
     let mut enc = Encoder {
+        imports: ImportSection::new(),
         types: TypeSection::new(),
         funcs: FunctionSection::new(),
         globals: GlobalSection::new(),
+        memories: MemorySection::new(),
         exports: ExportSection::new(),
         code: CodeSection::new(),
         global_idx: HashMap::new(),
         func_idx: HashMap::new(),
+        num_imported_funcs: 0,
         type_idx: HashMap::new(),
+        memory_count: 0,
     };
 
-    // Index globals and functions first: instructions reference them by index.
-    let mut global_names: Vec<String> = Vec::new();
-    let mut func_names: Vec<String> = Vec::new();
+    // ---- Pass 1: index imports, globals, and functions ----
+    // Imported functions occupy indices 0..num_imported_funcs-1 in the
+    // WASM function index space. Defined functions start after them.
     for item in &items[1..] {
         if let Node::List(l) = item {
             match head_word(l) {
+                Some("import") => {
+                    // (import "env" "name" (func $name (param ...) (result ...)))
+                    if let Some(Node::List(ft)) = l.get(3) {
+                        if head_word(ft) == Some("func") {
+                            let name = dollar_name(ft.get(1).ok_or_else(|| {
+                                CodegenError::CodegenError("import without a name".to_string())
+                            })?)?;
+                            enc.func_idx.insert(name.to_string(), enc.num_imported_funcs);
+                            enc.num_imported_funcs += 1;
+                        }
+                    }
+                }
                 Some("global") => {
                     let name = global_name(l)?.to_string();
                     enc.global_idx
-                        .insert(name.clone(), global_names.len() as u32);
-                    global_names.push(name);
+                        .insert(name.clone(), enc.global_idx.len() as u32);
                 }
                 Some("func") => {
                     let name = func_name(l)?.to_string();
-                    enc.func_idx.insert(name.clone(), func_names.len() as u32);
-                    func_names.push(name);
+                    // Defined function index = num_imported_funcs + position in defined list
+                    let defined_idx = enc.func_idx.len() as u32 - enc.num_imported_funcs;
+                    enc.func_idx.insert(name, enc.num_imported_funcs + defined_idx);
                 }
                 _ => {}
             }
         }
     }
 
-    // Types, function-section entries, globals, exports.
+    // ---- Pass 2: emit import, type, function, global, memory, export sections ----
     for item in &items[1..] {
         let l = match item {
             Node::List(l) => l,
             _ => continue,
         };
         match head_word(l) {
+            Some("import") => {
+                // (import "env" "name" (func $name (param ...) (result ...)))
+                let import_module = match l.get(1) {
+                    Some(Node::Str(s)) => s.clone(),
+                    _ => {
+                        return Err(CodegenError::CodegenError(
+                            "import without a module name".to_string(),
+                        ))
+                    }
+                };
+                let import_name = match l.get(2) {
+                    Some(Node::Str(s)) => s.clone(),
+                    _ => {
+                        return Err(CodegenError::CodegenError(
+                            "import without a field name".to_string(),
+                        ))
+                    }
+                };
+                let target = match l.get(3) {
+                    Some(Node::List(t)) => t,
+                    _ => {
+                        return Err(CodegenError::CodegenError(
+                            "import without a target".to_string(),
+                        ))
+                    }
+                };
+                match head_word(target) {
+                    Some("func") => {
+                        let _name = dollar_name(target.get(1).ok_or_else(|| {
+                            CodegenError::CodegenError("func import without a name".to_string())
+                        })?)?;
+                        let (params, results) = import_signature(target)?;
+                        let key: (Vec<u8>, Vec<u8>) = (
+                            params.iter().map(|t| u8::from(*t)).collect(),
+                            results.iter().map(|t| u8::from(*t)).collect(),
+                        );
+                        let ty = match enc.type_idx.get(&key) {
+                            Some(t) => *t,
+                            None => {
+                                enc.types
+                                    .function(params.iter().copied(), results.iter().copied());
+                                let idx = enc.type_idx.len() as u32;
+                                enc.type_idx.insert(key, idx);
+                                idx
+                            }
+                        };
+                        enc.imports.import(
+                            &import_module,
+                            &import_name,
+                            wasm_encoder::ImportType::Function(ty),
+                        );
+                    }
+                    other => {
+                        return Err(CodegenError::CodegenError(format!(
+                            "unsupported import target {other:?} (only (func $f) is imported)"
+                        )));
+                    }
+                }
+            }
+            Some("memory") => {
+                // (memory (export "memory") 1)
+                let limits = wasm_encoder::Limits { min: 1, max: None };
+                let mem_type = MemoryType { limits };
+                enc.memories.memory(mem_type);
+                enc.memory_count += 1;
+                // The export annotation is a CHILD of the memory definition
+                // (`(memory (export "memory") 1)`), not a sibling of it, so a
+                // top-level-only scan never sees it. Emit it here.
+                for node in &l[1..] {
+                    if let Node::List(inner) = node {
+                        if head_word(inner) == Some("export") {
+                            emit_export(
+                                &mut enc,
+                                &augment_export_target(inner, "memory".to_string(), None),
+                            )?;
+                        }
+                    }
+                }
+            }
             Some("global") => {
-                // (global $name (mut i64) (i64.const 0))
+                // (global $name (mut i64) (i64.const 0)) or (global $name (mut i32) (i32.const 0))
                 let mutable = match l.get(2) {
                     Some(Node::List(t)) => head_word(t) == Some("mut"),
                     _ => false,
@@ -307,6 +447,11 @@ fn encode_module(module: &Node) -> Result<Vec<u8>, CodegenError> {
                     Some(Node::List(init)) if head_word(init) == Some("i64.const") => {
                         Instruction::I64Const(as_i64(init.get(1).ok_or_else(|| {
                             CodegenError::CodegenError("i64.const without a value".to_string())
+                        })?)?)
+                    }
+                    Some(Node::List(init)) if head_word(init) == Some("i32.const") => {
+                        Instruction::I32Const(as_i32(init.get(1).ok_or_else(|| {
+                            CodegenError::CodegenError("i32.const without a value".to_string())
                         })?)?)
                     }
                     _ => Instruction::I64Const(0),
@@ -330,53 +475,36 @@ fn encode_module(module: &Node) -> Result<Vec<u8>, CodegenError> {
                     }
                 };
                 enc.funcs.function(ty);
-            }
-            Some("export") => {
-                // (export "name" (func $f))
-                let export_name = match l.get(1) {
-                    Some(Node::Str(s)) => s.clone(),
-                    _ => {
-                        return Err(CodegenError::CodegenError(
-                            "export without a name".to_string(),
-                        ))
-                    }
-                };
-                let target = match l.get(2) {
-                    Some(Node::List(t)) => t,
-                    _ => {
-                        return Err(CodegenError::CodegenError(
-                            "export without a target".to_string(),
-                        ))
-                    }
-                };
-                match head_word(target) {
-                    Some("func") => {
-                        let name = dollar_name(target.get(1).ok_or_else(|| {
-                            CodegenError::CodegenError("func export without a name".to_string())
-                        })?)?;
-                        let idx = *enc.func_idx.get(name).ok_or_else(|| {
-                            CodegenError::CodegenError(format!("export of unknown func {name}"))
-                        })?;
-                        enc.exports.export(&export_name, Export::Function(idx));
-                    }
-                    other => {
-                        return Err(CodegenError::CodegenError(format!(
-                            "unsupported export target {other:?} (only (func $f) is emitted)"
-                        )))
+                // `(func $f (export "f") ...)` — the export annotation is a
+                // child of the func definition, so emit it from here.
+                let fname = func_name(l)?.to_string();
+                for node in &l[1..] {
+                    if let Node::List(inner) = node {
+                        if head_word(inner) == Some("export") {
+                            emit_export(
+                                &mut enc,
+                                &augment_export_target(inner, "func".to_string(), Some(&fname)),
+                            )?;
+                        }
                     }
                 }
             }
+            Some("export") => emit_export(&mut enc, l)?,
             _ => {}
         }
     }
 
-    // Code section: bodies reference locals/globals/funcs by index.
+    // ---- Pass 3: code section (function bodies) ----
     for item in &items[1..] {
         let l = match item {
             Node::List(l) => l,
             _ => continue,
         };
         if head_word(l) != Some("func") {
+            continue;
+        }
+        // Skip imported functions (they have no body)
+        if l.get(1).and_then(word) == Some("import") {
             continue;
         }
         let (params, results) = func_signature(l)?;
@@ -422,17 +550,44 @@ fn encode_module(module: &Node) -> Result<Vec<u8>, CodegenError> {
                 }
             }
         }
-        for (i, n) in local_names.iter().enumerate() {
-            local_idx.insert(n.clone(), (params.len() + i) as u32);
-        }
 
-        // One declaration per distinct type keeps the section small; the emitter
-        // only uses i64 locals.
+        // Local declarations are grouped by type in the binary format. WASM
+        // assigns indices to ALL locals (params first, then declared locals)
+        // in *declaration order*, which is NOT the same as the grouped order
+        // used by `(local ...)` groups. Assign indices from the grouped
+        // declaration order so `local.get $x` resolves to the right slot,
+        // otherwise an i32 local reads an i64 slot (or vice versa) and the
+        // validator reports a type mismatch.
+        let mut i32_locals: Vec<String> = Vec::new();
+        let mut i64_locals: Vec<String> = Vec::new();
+        for n in &local_names {
+            // The NEAR ABI layer declares its scratch locals as i32; the
+            // WAT backend declares body locals as i64.
+            let ty = local_type_at(l, n).unwrap_or(ValType::I64);
+            match ty {
+                ValType::I32 => i32_locals.push(n.clone()),
+                _ => i64_locals.push(n.clone()),
+            }
+        }
         let mut local_decls: Vec<(u32, ValType)> = Vec::new();
-        local_decls.push((local_names.len() as u32, ValType::I64));
+        let mut next_idx = params.len() as u32;
+        if !i32_locals.is_empty() {
+            local_decls.push((i32_locals.len() as u32, ValType::I32));
+            for n in &i32_locals {
+                local_idx.insert(n.clone(), next_idx);
+                next_idx += 1;
+            }
+        }
+        if !i64_locals.is_empty() {
+            local_decls.push((i64_locals.len() as u32, ValType::I64));
+            for n in &i64_locals {
+                local_idx.insert(n.clone(), next_idx);
+                next_idx += 1;
+            }
+        }
         let mut f = Function::new(local_decls);
         for instr in body {
-            encode_instr(instr, &mut f, &local_idx, &enc.global_idx, &enc.func_idx)?;
+            encode_instr(instr, &mut f, &local_idx, &enc.global_idx, &enc.func_idx, enc.num_imported_funcs)?;
         }
         // Every function body must terminate with the `end` opcode.
         f.instruction(Instruction::End);
@@ -440,55 +595,81 @@ fn encode_module(module: &Node) -> Result<Vec<u8>, CodegenError> {
         enc.code.function(&f);
     }
 
+    // Section order is fixed by the WASM spec (Section 6.2):
+    //   type(1) -> import(2) -> func(3) -> table(4) -> memory(5) -> global(6)
+    //   -> export(7) -> start(8) -> elem(9) -> code(10) -> data(11)
+    // The import section references type indices, so it must follow the type
+    // section; a module with sections out of this order is rejected by every
+    // validator (wasm-encoder's `Module` does not reorder them for us).
     let mut module = WasmModule::new();
     module
         .section(&enc.types)
+        .section(&enc.imports)
         .section(&enc.funcs)
+        .section(&enc.memories)
         .section(&enc.globals)
         .section(&enc.exports)
         .section(&enc.code);
     Ok(module.finish())
 }
 
-fn is_annotation(item: &[Node]) -> bool {
-    matches!(
-        head_word(item),
-        Some("param") | Some("result") | Some("local")
-    )
-}
-
-fn global_name(l: &[Node]) -> Result<&str, CodegenError> {
-    let n = l
-        .get(1)
-        .ok_or_else(|| CodegenError::CodegenError("global without a name".to_string()))?;
-    dollar_name(n)
-}
-
-fn func_name(l: &[Node]) -> Result<&str, CodegenError> {
-    let n = l
-        .get(1)
-        .ok_or_else(|| CodegenError::CodegenError("func without a name".to_string()))?;
-    dollar_name(n)
-}
-
-fn val_type_at(l: &[Node], idx: usize) -> Result<ValType, CodegenError> {
-    match l.get(idx).and_then(word) {
-        Some("i64") | Some("i32") | Some("i16") | Some("i8") => Ok(ValType::I64),
-        _ => Err(CodegenError::CodegenError(format!(
-            "unsupported value type in WAT: {:?}",
-            l.get(idx)
-        ))),
+/// Determine the ValType of a local declaration `(local $name i32)` or `(local $name i64)`.
+fn local_type_at(l: &[Node], name: &str) -> Result<ValType, CodegenError> {
+    for node in l {
+        if let Node::List(item) = node {
+            if head_word(item) == Some("local") {
+                let n = dollar_name(item.get(1).ok_or_else(|| {
+                    CodegenError::CodegenError("local without a name".to_string())
+                })?)?;
+                if n == name {
+                    return val_type_at(item, 2);
+                }
+            }
+        }
     }
+    Ok(ValType::I64)
 }
 
-/// `(func $name (param $p i64)* (result i64)? ...) -> (params, results)`
+/// `(import ... (func $name (param $p i32)* (result i32)?))` -> (params, results).
+/// Handles both named `(param $name i32)` and anonymous `(param i32)` forms.
+fn import_signature(l: &[Node]) -> Result<(Vec<ValType>, Vec<ValType>), CodegenError> {
+    let mut params = Vec::new();
+    let mut results = Vec::new();
+    for item in l.iter().skip(1) {
+        if let Node::List(item) = item {
+            match head_word(item) {
+                Some("param") => {
+                    // Anonymous param: (param i32) — type at index 1.
+                    // Named param: (param $name i32) — type at index 2.
+                    if item.len() >= 3 {
+                        params.push(val_type_at(item, 2)?);
+                    } else {
+                        params.push(val_type_at(item, 1)?);
+                    }
+                }
+                Some("result") => results.push(val_type_at(item, 1)?),
+                _ => {}
+            }
+        }
+    }
+    Ok((params, results))
+}
+
+/// `(func $name (param $p i64)* (result i64)? ...)` -> (params, results).
+/// Handles both named `(param $name i64)` and anonymous `(param i64)` forms.
 fn func_signature(l: &[Node]) -> Result<(Vec<ValType>, Vec<ValType>), CodegenError> {
     let mut params = Vec::new();
     let mut results = Vec::new();
     for item in &l[1..] {
         if let Node::List(item) = item {
             match head_word(item) {
-                Some("param") => params.push(val_type_at(item, 2)?),
+                Some("param") => {
+                    if item.len() >= 3 {
+                        params.push(val_type_at(item, 2)?);
+                    } else {
+                        params.push(val_type_at(item, 1)?);
+                    }
+                }
                 Some("result") => results.push(val_type_at(item, 1)?),
                 _ => {}
             }
@@ -509,12 +690,126 @@ fn block_type(l: &[Node]) -> Result<BlockType, CodegenError> {
     Ok(BlockType::Empty)
 }
 
+fn is_annotation(item: &[Node]) -> bool {
+    matches!(
+        head_word(item),
+        Some("param") | Some("result") | Some("local") | Some("export")
+    )
+}
+
+fn global_name(l: &[Node]) -> Result<&str, CodegenError> {
+    let n = l
+        .get(1)
+        .ok_or_else(|| CodegenError::CodegenError("global without a name".to_string()))?;
+    dollar_name(n)
+}
+
+/// Rebuild an inline export node with its implied target made explicit.
+///
+/// `(func $increment (export "increment"))` in WAT text is shorthand for
+/// `(export "increment" (func $increment))`; the nested node parses as just
+/// `(export "increment")` with the target missing. `kind`/`name` supply it.
+fn augment_export_target(
+    inner: &[Node],
+    kind: String,
+    name: Option<&str>,
+) -> Vec<Node> {
+    let mut out: Vec<Node> = vec![Node::Word("export".to_string())];
+    // preserve the export name (first element after the head word)
+    if let Some(Node::Str(s)) = inner.get(1) {
+        out.push(Node::Str(s.clone()));
+    }
+    let mut target: Vec<Node> = vec![Node::Word(kind)];
+    match name {
+        Some(n) => target.push(Node::Word(format!("${n}"))),
+        None => target.push(Node::Word("0".to_string())),
+    }
+    out.push(Node::List(target));
+    out
+}
+
+/// Emit one `(export "name" (func $f))` / `(export "name" (memory 0))` node.
+///
+/// Exports appear in two shapes in the emitted WAT: as a top-level module
+/// entry, and inline inside a `(func ...)` or `(memory ...)` definition. Both
+/// forms are the same node shape, so both call this helper.
+fn emit_export(enc: &mut Encoder, l: &[Node]) -> Result<(), CodegenError> {
+    let export_name = match l.get(1) {
+        Some(Node::Str(s)) => s.clone(),
+        _ => {
+            return Err(CodegenError::CodegenError(
+                "export without a name".to_string(),
+            ))
+        }
+    };
+    // `(export "f")` nested inside a func/memory omits the explicit target —
+    // the enclosing definition is implied. Callers that hit this form pass
+    // the enclosing name in `l[2]` as a word so this branch is unreachable;
+    // see the two call sites below.
+    let target: Node = match l.get(2) {
+        Some(Node::List(t)) => Node::List(t.clone()),
+        Some(Node::Word(w)) => Node::List(vec![
+            Node::Word("func".to_string()),
+            Node::Word(format!("${w}")),
+        ]),
+        _ => {
+            return Err(CodegenError::CodegenError(
+                "export without a target".to_string(),
+            ))
+        }
+    };
+    let target: Vec<Node> = match target {
+        Node::List(v) => v,
+        other => vec![other],
+    };
+    match head_word(&target) {
+        Some("func") => {
+            let name = dollar_name(target.get(1).ok_or_else(|| {
+                CodegenError::CodegenError("func export without a name".to_string())
+            })?)?;
+            let idx = *enc.func_idx.get(name).ok_or_else(|| {
+                CodegenError::CodegenError(format!("export of unknown func {name}"))
+            })?;
+            enc.exports.export(&export_name, Export::Function(idx));
+        }
+        Some("memory") => {
+            enc.exports.export(&export_name, Export::Memory(0));
+        }
+        other => {
+            return Err(CodegenError::CodegenError(format!(
+                "unsupported export target {other:?} (only (func $f) and (memory) are exported)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn func_name(l: &[Node]) -> Result<&str, CodegenError> {
+    let n = l
+        .get(1)
+        .ok_or_else(|| CodegenError::CodegenError("func without a name".to_string()))?;
+    dollar_name(n)
+}
+
+fn val_type_at(l: &[Node], idx: usize) -> Result<ValType, CodegenError> {
+    match l.get(idx).and_then(word) {
+        Some("i64") => Ok(ValType::I64),
+        Some("i32") => Ok(ValType::I32),
+        Some("i16") | Some("i8") => Ok(ValType::I64),
+        _ => Err(CodegenError::CodegenError(format!(
+            "unsupported value type in WAT: {:?}",
+            l.get(idx)
+        ))),
+    }
+}
+
 fn encode_instr(
     node: &Node,
     f: &mut Function,
     locals: &HashMap<String, u32>,
     globals: &HashMap<String, u32>,
     funcs: &HashMap<String, u32>,
+    num_imported_funcs: u32,
 ) -> Result<(), CodegenError> {
     let list = match node {
         Node::List(l) => l,
@@ -559,12 +854,10 @@ fn encode_instr(
     // Instructions whose operand may be folded into the node.
     match head {
         "local.set" | "local.tee" => {
-            // `(local.set $x)` (value already on the stack) or
-            // `(local.set $x <folded value>)`.
             let idx = local(&args[0])?;
             for a in args.iter().skip(1) {
                 if matches!(a, Node::List(_)) {
-                    encode_instr(a, f, locals, globals, funcs)?;
+                    encode_instr(a, f, locals, globals, funcs, num_imported_funcs)?;
                 }
             }
             f.instruction(if head == "local.set" {
@@ -578,24 +871,21 @@ fn encode_instr(
             let idx = global(&args[0])?;
             for a in args.iter().skip(1) {
                 if matches!(a, Node::List(_)) {
-                    encode_instr(a, f, locals, globals, funcs)?;
+                    encode_instr(a, f, locals, globals, funcs, num_imported_funcs)?;
                 }
             }
             f.instruction(Instruction::GlobalSet(idx));
             return Ok(());
         }
         "br_if" => {
-            // `(br_if N)` or `(br_if N <cond>)`
             let n = as_i64(&args[0])? as u32;
             if let Some(Node::List(_)) = args.get(1) {
-                encode_instr(&args[1], f, locals, globals, funcs)?;
+                encode_instr(&args[1], f, locals, globals, funcs, num_imported_funcs)?;
             }
             f.instruction(Instruction::BrIf(n));
             return Ok(());
         }
         "if" => {
-            // `(if (then ...) (else ...))` — condition already on the stack, or
-            // `(if (result i64) <cond> (then ...) (else ...))` — folded.
             let bt = block_type(args)?;
             let mut start = 0usize;
             if let Some(Node::List(first)) = args.first() {
@@ -603,13 +893,11 @@ fn encode_instr(
                     start = 1;
                 }
             }
-            // A folded condition (`(if (result i64) <cond> (then ...) ...)`) is
-            // an operand, not a body clause; consume it and move the body start.
             let mut body_start = start;
             if let Some(Node::List(cond)) = args.get(start) {
                 let h = head_word(cond);
                 if h != Some("then") && h != Some("else") {
-                    encode_instr(&args[start], f, locals, globals, funcs)?;
+                    encode_instr(&args[start], f, locals, globals, funcs, num_imported_funcs)?;
                     body_start = start + 1;
                 }
             }
@@ -619,13 +907,13 @@ fn encode_instr(
                     match head_word(body) {
                         Some("then") => {
                             for instr in &body[1..] {
-                                encode_instr(instr, f, locals, globals, funcs)?;
+                                encode_instr(instr, f, locals, globals, funcs, num_imported_funcs)?;
                             }
                         }
                         Some("else") => {
                             f.instruction(Instruction::Else);
                             for instr in &body[1..] {
-                                encode_instr(instr, f, locals, globals, funcs)?;
+                                encode_instr(instr, f, locals, globals, funcs, num_imported_funcs)?;
                             }
                         }
                         _ => {
@@ -646,7 +934,7 @@ fn encode_instr(
                 Instruction::Loop(BlockType::Empty)
             });
             for instr in args {
-                encode_instr(instr, f, locals, globals, funcs)?;
+                encode_instr(instr, f, locals, globals, funcs, num_imported_funcs)?;
             }
             f.instruction(Instruction::End);
             return Ok(());
@@ -655,20 +943,29 @@ fn encode_instr(
     }
 
     // Everything else is a flat instruction with immediate arguments.
-    //
-    // Its operands may still be folded (`(i64.lt_s (local.get $i) (i64.const 3))`),
-    // and in that case they are emitted BEFORE the operator.
+    // Its operands may still be folded; emit them BEFORE the operator.
     for a in args {
         if matches!(a, Node::List(_)) {
-            encode_instr(a, f, locals, globals, funcs)?;
+            encode_instr(a, f, locals, globals, funcs, num_imported_funcs)?;
         }
     }
 
+    let memarg = wasm_encoder::MemArg {
+        offset: 0,
+        align: 0,
+        memory_index: 0,
+    };
     let instr = match head {
         "i64.const" => Instruction::I64Const(as_i64(&args[0])?),
+        "i32.const" => Instruction::I32Const(as_i32(&args[0])?),
         "local.get" => Instruction::LocalGet(local(&args[0])?),
         "global.get" => Instruction::GlobalGet(global(&args[0])?),
-        "call" => Instruction::Call(func(&args[0])?),
+        "call" => {
+            // Imported functions occupy indices 0..num_imported_funcs-1;
+            // defined functions start at num_imported_funcs.
+            let idx = func(&args[0])?;
+            Instruction::Call(idx)
+        }
         "br" => Instruction::Br(as_i64(&args[0])? as u32),
         "i64.add" => Instruction::I64Add,
         "i64.sub" => Instruction::I64Sub,
@@ -683,11 +980,22 @@ fn encode_instr(
         "i64.eq" => Instruction::I64Eq,
         "i64.ne" => Instruction::I64Neq,
         "i64.lt_s" => Instruction::I64LtS,
+        "i64.lt_u" => Instruction::I64LtU,
         "i64.gt_s" => Instruction::I64GtS,
         "i64.le_s" => Instruction::I64LeS,
         "i64.ge_s" => Instruction::I64GeS,
         "i64.eqz" => Instruction::I64Eqz,
+        "i32.add" => Instruction::I32Add,
         "i32.eqz" => Instruction::I32Eqz,
+        "i32.load" => Instruction::I32Load(memarg),
+        "i32.load8_u" => Instruction::I32Load8_U(memarg),
+        "i32.load16_u" => Instruction::I32Load16_U(memarg),
+        "i64.load" => Instruction::I64Load(memarg),
+        "i32.store" => Instruction::I32Store(memarg),
+        "i32.store8" => Instruction::I32Store8(memarg),
+        "i32.store16" => Instruction::I32Store16(memarg),
+        "i64.store" => Instruction::I64Store(memarg),
+        "i64.extend_i32_u" => Instruction::I64ExtendI32U,
         "drop" => Instruction::Drop,
         "return" => Instruction::Return,
         "end" => Instruction::End,

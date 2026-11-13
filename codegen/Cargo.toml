@@ -16,3 +16,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 wasm-encoder = "0.1"
+
+[dev-dependencies]
+wasmparser = "0.243"
